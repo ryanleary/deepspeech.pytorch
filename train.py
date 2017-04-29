@@ -6,6 +6,7 @@ import time
 
 import torch
 from torch.autograd import Variable
+from torch.utils.data.sampler import RandomSampler, SequentialSampler
 from warpctc_pytorch import CTCLoss
 from data.data_loader import AudioDataLoader, SpectrogramDataset
 from decoder import ArgMaxDecoder
@@ -27,6 +28,8 @@ parser.add_argument('--hidden_size', default=400, type=int, help='Hidden size of
 parser.add_argument('--hidden_layers', default=4, type=int, help='Number of RNN layers')
 parser.add_argument('--epochs', default=70, type=int, help='Number of training epochs')
 parser.add_argument('--cuda', dest='cuda', action='store_true', help='Use cuda to train model')
+parser.add_argument('--no_sortaGrad', dest='sortaGrad', action='store_false',
+                    help='Turn off sortaGrad, using random sampler')
 parser.add_argument('--lr', '--learning-rate', default=3e-4, type=float, help='initial learning rate')
 parser.add_argument('--momentum', default=0.9, type=float, help='momentum')
 parser.add_argument('--max_norm', default=400, type=int, help='Norm cutoff to prevent explosion of gradients')
@@ -40,7 +43,7 @@ parser.add_argument('--final_model_path', default='models/deepspeech_final.pth.t
                     help='Location to save final model')
 parser.add_argument('--continue_from', default='', help='Continue from checkpoint model')
 parser.add_argument('--rnn_type', default='lstm', help='Type of the RNN. rnn|gru|lstm are supported')
-parser.set_defaults(cuda=False, silent=False, checkpoint=False, visdom=False)
+parser.set_defaults(cuda=False, silent=False, checkpoint=False, visdom=False, sortaGrad=True)
 
 
 class AverageMeter(object):
@@ -120,8 +123,9 @@ def main():
                                        normalize=True)
     test_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=args.val_manifest, labels=labels,
                                       normalize=True)
+    sampler = SequentialSampler(train_dataset) if args.sortaGrad else RandomSampler(train_dataset)
     train_loader = AudioDataLoader(train_dataset, batch_size=args.batch_size,
-                                   num_workers=args.num_workers)
+                                   num_workers=args.num_workers, sampler=sampler)
     test_loader = AudioDataLoader(test_dataset, batch_size=args.batch_size,
                                   num_workers=args.num_workers)
 
@@ -288,9 +292,9 @@ def main():
             loss_results[epoch] = avg_loss
             wer_results[epoch] = wer
             cer_results[epoch] = cer
-            epoch += 1
-            x_axis = epochs[0:epoch]
-            y_axis = [loss_results[0:epoch], wer_results[0:epoch], cer_results[0:epoch]]
+            n = epoch + 1
+            x_axis = epochs[0:n]
+            y_axis = [loss_results[0:n], wer_results[0:n], cer_results[0:n]]
             for x in range(len(viz_windows)):
                 if viz_windows[x] is None:
                     viz_windows[x] = viz.line(
@@ -314,6 +318,11 @@ def main():
         optim_state = optimizer.state_dict()
         optim_state['param_groups'][0]['lr'] = optim_state['param_groups'][0]['lr'] / args.learning_anneal
         optimizer.load_state_dict(optim_state)
+
+        if args.sortaGrad and epoch == 0:
+            print("Switching to random batches")
+            sampler = RandomSampler(train_dataset)
+            train_loader.sampler = sampler
         print('Learning rate annealed to: {lr:.6f}'.format(lr=optim_state['param_groups'][0]['lr']))
 
         avg_loss = 0
