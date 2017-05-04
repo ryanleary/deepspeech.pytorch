@@ -284,8 +284,8 @@ def main():
         cer *= 100
 
         print('Validation Summary Epoch: [{0}]\t'
-              'Average WER {wer:.0f}\t'
-              'Average CER {cer:.0f}\t'.format(
+              'Average WER {wer:.3f}\t'
+              'Average CER {cer:.3f}\t'.format(
             epoch + 1, wer=wer, cer=cer))
 
         if args.visdom:

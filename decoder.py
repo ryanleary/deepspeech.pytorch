@@ -17,6 +17,7 @@
 
 import Levenshtein as Lev
 import torch
+from ctc_beamsearch import ctc_beamsearch
 from six.moves import xrange
 
 class Decoder(object):
@@ -140,3 +141,20 @@ class ArgMaxDecoder(Decoder):
         _, max_probs = torch.max(probs.transpose(0, 1), 2)
         strings = self.convert_to_strings(max_probs.view(max_probs.size(0), max_probs.size(1)), sizes)
         return self.process_strings(strings, remove_repetitions=True)
+
+class BeamDecoder(Decoder):
+    def __init__(self, labels, blank_index=0, space_index=1, top_paths=5, beam_width=10, merge_repeated=True):
+        super().__init__(labels, blank_index=blank_index, space_index=space_index)
+        self.top_paths = top_paths
+        self.beam_width=beam_width
+        self.merge_repeated=merge_repeated
+    
+    def decode(self, inputs, sizes=None):
+        inputs_npy = inputs.cpu().numpy()
+        with open("temp.npy", 'w') as fh:
+            np.save(fh, inputs_npy)
+        results = []
+        for x in range(inputs_npy.shape[1]):
+            result = ctc_beamsearch(inputs_npy[:,x,:], self.labels, k=self.beam_width)
+            results.append(result)
+        return results

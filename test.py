@@ -3,9 +3,10 @@ import json
 
 import torch
 from torch.autograd import Variable
+import torch.nn as nn
 
 from data.data_loader import SpectrogramDataset, AudioDataLoader
-from decoder import ArgMaxDecoder
+from decoder import ArgMaxDecoder, BeamDecoder
 from model import DeepSpeech
 
 parser = argparse.ArgumentParser(description='DeepSpeech prediction')
@@ -27,8 +28,9 @@ args = parser.parse_args()
 
 if __name__ == '__main__':
     package = torch.load(args.model_path)
+    print(package.keys())
     model = DeepSpeech(rnn_hidden_size=package['hidden_size'], nb_layers=package['hidden_layers'],
-                       num_classes=package['nout'])
+                       num_classes=package['nout'], rnn_type=nn.GRU)
     if args.cuda:
         model = torch.nn.DataParallel(model).cuda()
     model.load_state_dict(package['state_dict'])
@@ -36,7 +38,8 @@ if __name__ == '__main__':
 
     with open(args.labels_path) as label_file:
         labels = str(''.join(json.load(label_file)))
-    decoder = ArgMaxDecoder(labels)
+    #decoder = ArgMaxDecoder(labels)
+    decoder = BeamDecoder(labels, beam_width=30)
 
     audio_conf = dict(sample_rate=args.sample_rate,
                       window_size=args.window_size,
@@ -71,6 +74,7 @@ if __name__ == '__main__':
         decoded_output = decoder.decode(out.data, sizes)
         target_strings = decoder.process_strings(decoder.convert_to_strings(split_targets))
         wer, cer = 0, 0
+        print(decoded_output)
         for x in range(len(target_strings)):
             wer += decoder.wer(decoded_output[x], target_strings[x]) / float(len(target_strings[x].split()))
             cer += decoder.cer(decoded_output[x], target_strings[x]) / float(len(target_strings[x]))
@@ -81,5 +85,5 @@ if __name__ == '__main__':
     cer = total_cer / len(test_loader.dataset)
 
     print('Validation Summary \t'
-          'Average WER {wer:.0f}\t'
-          'Average CER {cer:.0f}\t'.format(wer=wer * 100, cer=cer * 100))
+          'Average WER {wer:.3f}\t'
+          'Average CER {cer:.3f}\t'.format(wer=wer * 100, cer=cer * 100))
