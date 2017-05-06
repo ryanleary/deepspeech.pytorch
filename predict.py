@@ -4,9 +4,8 @@ import torch
 from torch.autograd import Variable
 
 from data.data_loader import SpectrogramParser
-from decoder import ArgMaxDecoder
+from decoder import ArgMaxDecoder, BeamSearchDecoder
 from model import DeepSpeech
-
 parser = argparse.ArgumentParser(description='DeepSpeech prediction')
 parser.add_argument('--model_path', default='models/deepspeech_final.pth.tar',
                     help='Path to model file created by training')
@@ -22,7 +21,7 @@ if __name__ == '__main__':
     labels = DeepSpeech.get_labels(model)
     audio_conf = DeepSpeech.get_audio_conf(model)
 
-    decoder = ArgMaxDecoder(labels)
+    decoder = BeamSearchDecoder(labels, beam_size=100)
     parser = SpectrogramParser(audio_conf, normalize=True)
     spect = parser.parse_audio(args.audio_path).contiguous()
     spect = spect.view(1, 1, spect.size(0), spect.size(1))

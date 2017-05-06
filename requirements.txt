@@ -1,5 +1,7 @@
 python-levenshtein
+librosa
 torch
 visdom
 wget
 librosa
+wget

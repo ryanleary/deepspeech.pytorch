@@ -9,13 +9,20 @@ from decoder import ArgMaxDecoder
 from model import DeepSpeech
 
 parser = argparse.ArgumentParser(description='DeepSpeech prediction')
+parser.add_argument('--sample_rate', default=16000, type=int, help='Sample rate')
+parser.add_argument('--labels_path', default='labels.json', help='Contains all characters for prediction')
 parser.add_argument('--model_path', default='models/deepspeech_final.pth.tar',
                     help='Path to model file created by training')
+parser.add_argument('--window_size', default=.02, type=float, help='Window size for spectrogram in seconds')
+parser.add_argument('--window_stride', default=.01, type=float, help='Window stride for spectrogram in seconds')
+parser.add_argument('--window', default='hamming', help='Window type for spectrogram generation')
 parser.add_argument('--cuda', action="store_true", help='Use cuda to test model')
 parser.add_argument('--val_manifest', metavar='DIR',
                     help='path to validation manifest csv', default='data/val_manifest.csv')
 parser.add_argument('--batch_size', default=20, type=int, help='Batch size for training')
 parser.add_argument('--num_workers', default=4, type=int, help='Number of workers used in dataloading')
+parser.add_argument('--beam_size', dest='beam_size', default=12, type=int, help='Size of beam in decoder beam search.')
+parser.add_argument('--decoder', default='argmax', help='Type of the decoder used for inference.')
 args = parser.parse_args()
 
 if __name__ == '__main__':
@@ -24,7 +31,11 @@ if __name__ == '__main__':
 
     labels = DeepSpeech.get_labels(model)
     audio_conf = DeepSpeech.get_audio_conf(model)
-    decoder = ArgMaxDecoder(labels)
+
+    if args.decoder == 'beamsearch':
+        decoder = BeamSearchDecoder(labels, beam_size=args.beam_size)
+    else:
+        decoder = ArgMaxDecoder(labels)
 
     test_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=args.val_manifest, labels=labels,
                                       normalize=True)

@@ -123,6 +123,7 @@ class DeepSpeech(nn.Module):
         model = cls(rnn_hidden_size=package['hidden_size'], nb_layers=package['hidden_layers'],
                     labels=package['labels'], audio_conf=package['audio_conf'], rnn_type=supported_rnns[package['rnn_type']])
         model.load_state_dict(package['state_dict'])
+
         if cuda:
             model = torch.nn.DataParallel(model).cuda()
         return model
@@ -202,6 +203,7 @@ if __name__ == '__main__':
         print("  Current Loss:      {0:.3f}".format(package['loss_results'][epochs-1]))
         print("  Current CER:       {0:.3f}".format(package['cer_results'][epochs-1]))
         print("  Current WER:       {0:.3f}".format(package['wer_results'][epochs-1]))
+
 
     if package.get('meta', None) is not None:
         print("")
