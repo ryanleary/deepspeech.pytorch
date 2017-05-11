@@ -5,7 +5,7 @@ from torch.autograd import Variable
 
 from beam_decoder import decode
 from data.data_loader import SpectrogramParser
-from decoder import ArgMaxDecoder
+from decoder import ArgMaxDecoder, BeamLMDecoder
 from model import DeepSpeech, supported_rnns
 import numpy as np
 import kenlm
@@ -110,38 +110,38 @@ def softmax(x):
     return e_x / e_x.sum(axis=0)
 
 if __name__ == '__main__':
-    package = torch.load(args.model_path)
-    model = DeepSpeech(rnn_hidden_size=package['hidden_size'], nb_layers=package['hidden_layers'],
-                       num_classes=package['nout'], rnn_type=supported_rnns[args.rnn_type])
-    if args.cuda:
-        model = torch.nn.DataParallel(model).cuda()
-    model.load_state_dict(package['state_dict'])
-    audio_conf = dict(sample_rate=args.sample_rate,
-                      window_size=args.window_size,
-                      window_stride=args.window_stride,
-                      window=args.window)
-    with open(args.labels_path) as label_file:
-        labels = str(''.join(json.load(label_file)))
+    model = DeepSpeech.load_model(args.model_path, cuda=args.cuda)
+    model.eval()
+
+    labels = DeepSpeech.get_labels(model)
+    audio_conf = DeepSpeech.get_audio_conf(model)
+
     decoder = ArgMaxDecoder(labels)
+
+    lm = kenlm.LanguageModel("models/3-gram.pruned.1e-7.bin")
+    beam_decoder = BeamLMDecoder(labels, lm)
+
     parser = SpectrogramParser(audio_conf, normalize=True)
     spect = parser.parse_audio(args.audio_path).contiguous()
     spect = spect.view(1, 1, spect.size(0), spect.size(1))
     out = model(Variable(spect))
     out = out.transpose(0, 1)  # TxNxH
-    decoded_output = decoder.decode(out.data)
-    print(decoded_output)
+
+    print("argmax:", [x.lower() for x in decoder.decode(out.data)])
+    print("beamlm:", [x.lower() for x in beam_decoder.decode(out.data)])
+
     #import joblib
-    raw_scores = out.data.cpu().numpy()
+    #raw_scores = out.data.cpu().numpy()
     #joblib.dump(raw_scores, "scores.npy")
     #print("arg max:    ", decoded_output[0])
 
-    scores = np.transpose(raw_scores, axes=(1, 0, 2))
-    scores = scores[0]
-    scores = softmax(scores.T).T
-
-    lm = kenlm.LanguageModel("3-gram.pruned.1e-7.bin")
-    beam = BeamSearch(lm, alphabet=labels, blank = '_',)
-    print(beam.decode( scores, k = 10 ))
+    # scores = np.transpose(raw_scores, axes=(1, 0, 2))
+    # scores = scores[0]
+    # scores = softmax(scores.T).T
+    #
+    # lm = kenlm.LanguageModel("models/3-gram.pruned.1e-7.bin")
+    # beam = BeamSearch(lm, alphabet=labels, blank = '_',)
+    # print(beam.decode( scores, k = 10 ))
     #lm = kenlm.LanguageModel("enwiki9.binary")
     #labels = json.loads(open("labels.json").read())
     #int_char_map = {i: s for i, s in enumerate(labels)}

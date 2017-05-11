@@ -18,6 +18,7 @@
 import Levenshtein as Lev
 import torch
 from six.moves import xrange
+import numpy as np
 
 
 class Decoder(object):
@@ -141,3 +142,44 @@ class ArgMaxDecoder(Decoder):
         _, max_probs = torch.max(probs.transpose(0, 1), 2)
         strings = self.convert_to_strings(max_probs.view(max_probs.size(0), max_probs.size(1)), sizes)
         return self.process_strings(strings, remove_repetitions=True)
+
+class BeamLMDecoder(Decoder):
+    def __init__(self, labels, lm, beam_width=20, top_n=1, blank_index=0, space_index=28):
+        super(BeamLMDecoder, self).__init__(labels, blank_index=blank_index, space_index=space_index)
+        self._lm = lm
+        self._beam_width=beam_width
+        self._top_n=top_n
+        self._alpha = 0.5
+
+    def decode(self, probs, sizes=None):
+        probs = probs.transpose(0, 1)
+        probs_shape = probs.size()
+        S = probs_shape[0]
+        N = probs_shape[2]
+        T = probs_shape[1]
+        s = 0
+
+        candidates = [ (0.0, '', 0.0) ]
+        #(acoustic_proba, prefix, lm)
+        for t in range(T):
+            new_candidates = []
+            for i in range(N):
+                symbol = self.int_to_char[i]
+                # if symbol == '_':
+                #     symbol = ''
+                #acoustic_proba = np.log1p()
+                for candidate in candidates:
+                    prefix_acoustic_score, prefix, _ = candidate
+                    new_phrase = prefix + symbol
+                    new_phrase = new_phrase.upper()
+                    #print(new_phrase, s,i,t)
+                    lm_score = self._lm.score(new_phrase, bos=False, eos=False)
+                    #print(self.process_string(True, prefix) + symbol, lm_score)
+
+                    total_acoustic_score =  prefix_acoustic_score + probs[s][t][i]
+                    total_score = (1-self._alpha)*total_acoustic_score + self._alpha*lm_score
+
+                    new_candidates.append( ( total_acoustic_score, new_phrase, total_score ) )
+            sorted_new_candidates = sorted( new_candidates, key = lambda x: x[-1], reverse=True )
+            candidates = sorted_new_candidates[:self._beam_width]
+        return self.process_strings([c[1] for c in candidates[:self._top_n]], remove_repetitions=True)
