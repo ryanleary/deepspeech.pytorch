@@ -183,3 +183,27 @@ class BeamLMDecoder(Decoder):
             sorted_new_candidates = sorted( new_candidates, key = lambda x: x[-1], reverse=True )
             candidates = sorted_new_candidates[:self._beam_width]
         return self.process_strings([c[1] for c in candidates[:self._top_n]], remove_repetitions=True)
+
+class BeamSearchDecoder(Decoder):
+    def decode(self, probs, sizes=None):
+        from ctc_beamsearch import ctc_beamsearch
+        strings = []
+        probs_transpose = probs.transpose(0, 1)
+
+        # iterate over probability distribution in each batch [due to API of ctc_beamsearch]
+        for batch_idx in xrange(probs.size(1)):
+            b_probs = probs_transpose[batch_idx].numpy()
+            decoded = ctc_beamsearch(b_probs, alphabet=self.labels, k=10)
+            strings.append(decoded)
+        return self.process_strings(strings, remove_repetitions=True)
+
+    def string_to_activations(self, strings):
+        batch_size = len(strings)
+        strings = [string.upper() for string in strings]
+        n_labels = len(self.labels)
+        string_len = max([len(string) for string in strings])
+        acts = torch.LongTensor(string_len, batch_size, n_labels).zero_()
+
+        # TODO ???
+
+        return acts

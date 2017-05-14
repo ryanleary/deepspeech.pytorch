@@ -23,15 +23,8 @@ cd pytorch_binding
 python setup.py install
 ```
 
-Install pytorch audio:
-```
-sudo apt-get install sox libsox-dev libsox-fmt-all
-git clone https://github.com/pytorch/audio.git
-cd audio
-python setup.py install
-```
-
 Finally:
+
 ```
 pip install -r requirements.txt
 ```
@@ -159,6 +152,8 @@ Included is a script to inject noise into an audio file to hear what different n
 python noise_inject.py --input_path /path/to/input.wav --noise_path /path/to/noise.wav --output_path /path/to/input_injected.wav --noise_level 0.5 # higher levels means more noise
 ```
 
+=======
+>>>>>>> init
 ### Checkpoints
 
 Training supports saving checkpoints of the model to continue training from should an error occur or early termination. To enable epoch
@@ -208,4 +203,4 @@ To also note, there is no final softmax layer on the model as when trained, warp
 
 ## Acknowledgements
 
-Thanks to [Egor](https://github.com/EgorLakomkin) and [Ryan](https://github.com/ryanleary) for their contributions!
+Thanks to [Egor](https://github.com/EgorLakomkin) for his awesome contributions in data processing and general feedback!

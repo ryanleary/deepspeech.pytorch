@@ -6,11 +6,11 @@ import time
 
 import torch
 from torch.autograd import Variable
-from torch.utils.data.sampler import RandomSampler, SequentialSampler
 from warpctc_pytorch import CTCLoss
+from ctc_hinge_func import ctc_hinge_loss
 
 from data.data_loader import AudioDataLoader, SpectrogramDataset
-from decoder import ArgMaxDecoder
+from decoder import ArgMaxDecoder, BeamSearchDecoder
 from model import DeepSpeech, supported_rnns
 
 parser = argparse.ArgumentParser(description='DeepSpeech training')
@@ -29,8 +29,6 @@ parser.add_argument('--hidden_size', default=400, type=int, help='Hidden size of
 parser.add_argument('--hidden_layers', default=4, type=int, help='Number of RNN layers')
 parser.add_argument('--epochs', default=70, type=int, help='Number of training epochs')
 parser.add_argument('--cuda', dest='cuda', action='store_true', help='Use cuda to train model')
-parser.add_argument('--no_sortaGrad', dest='sortaGrad', action='store_false',
-                    help='Turn off sortaGrad, using random sampler')
 parser.add_argument('--lr', '--learning-rate', default=3e-4, type=float, help='initial learning rate')
 parser.add_argument('--momentum', default=0.9, type=float, help='momentum')
 parser.add_argument('--max_norm', default=400, type=int, help='Norm cutoff to prevent explosion of gradients')
@@ -43,16 +41,12 @@ parser.add_argument('--save_folder', default='models/', help='Location to save e
 parser.add_argument('--final_model_path', default='models/deepspeech_final.pth.tar',
                     help='Location to save final model')
 parser.add_argument('--continue_from', default='', help='Continue from checkpoint model')
-parser.add_argument('--rnn_type', default='rnn', help='Type of the RNN. rnn|gru|lstm are supported')
+parser.add_argument('--rnn_type', default='lstm', help='Type of the RNN. rnn|gru|lstm are supported')
 parser.add_argument('--augment', dest='augment', action='store_true', help='Use random tempo and gain perturbations.')
-parser.add_argument('--noise_dir', default=None,
-                    help='Directory to inject noise into audio. If default, noise Inject not added')
-parser.add_argument('--noise_prob', default=0.4, help='Probability of noise being added per sample')
-parser.add_argument('--noise_min', default=0.0,
-                    help='Minimum noise level to sample from. (1.0 means all noise, not original signal)', type=float)
-parser.add_argument('--noise_max', default=0.5,
-                    help='Maximum noise levels to sample from. Maximum 1.0', type=float)
-parser.set_defaults(cuda=False, silent=False, checkpoint=False, visdom=False, augment=False, sortaGrad=True)
+parser.add_argument('--beam_size', dest='beam_size', type=int, help='Size of beam in decoder beam search.')
+parser.add_argument('--decoder', default='argmax', help='Type of the decoder used for inference.')
+parser.add_argument('--loss', default='CTC', help='Type of loss.')
+parser.set_defaults(cuda=False, silent=False, checkpoint=False, visdom=False, augment=False, beam_size=12)
 
 
 class AverageMeter(object):
@@ -73,12 +67,38 @@ class AverageMeter(object):
         self.count += n
         self.avg = self.sum / self.count
 
+
+def checkpoint(model, optimizer, args, audio_conf, labels, epoch=None, iteration=None, loss_results=None,
+               cer_results=None, wer_results=None, avg_loss=None, rnn_type="lstm"):
+    package = {
+        'hidden_size': args.hidden_size,
+        'hidden_layers': args.hidden_layers,
+        'state_dict': model.state_dict(),
+        'optim_dict': optimizer.state_dict(),
+        'rnn_type': rnn_type,
+        'audio_conf': audio_conf,
+        'labels': labels
+    }
+    if avg_loss is not None:
+        package['avg_loss'] = avg_loss
+    if epoch is not None:
+        package['epoch'] = epoch + 1  # increment for readability
+    if iteration is not None:
+        package['iteration'] = iteration
+    if loss_results is not None:
+        package['loss_results'] = loss_results
+        package['cer_results'] = cer_results
+        package['wer_results'] = wer_results
+    return package
+
+
 def main():
     args = parser.parse_args()
     save_folder = args.save_folder
 
     loss_results, cer_results, wer_results = None, None, None
     if args.visdom:
+        print("Using visdom.")
         from visdom import Visdom
         viz = Visdom()
 
@@ -98,47 +118,49 @@ def main():
             print('Directory already exists.')
         else:
             raise
-    criterion = CTCLoss()
 
     with open(args.labels_path) as label_file:
         labels = str(''.join(json.load(label_file)))
 
+    if args.decoder == 'beamsearch':
+        decoder = BeamSearchDecoder(labels, beam_size=args.beam_size)
+    else:
+        decoder = ArgMaxDecoder(labels)
+    if args.loss == 'ctc_hinge':
+        criterion = ctc_hinge_loss(decoder, aug_loss=1)
+    else:
+        criterion = CTCLoss()
+
     audio_conf = dict(sample_rate=args.sample_rate,
                       window_size=args.window_size,
                       window_stride=args.window_stride,
-                      window=args.window,
-                      noise_dir=args.noise_dir,
-                      noise_prob=args.noise_prob,
-                      noise_levels=(args.noise_min, args.noise_max))
+                      window=args.window)
 
     train_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=args.train_manifest, labels=labels,
                                        normalize=True, augment=args.augment)
     test_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=args.val_manifest, labels=labels,
                                       normalize=True, augment=False)
-    sampler = SequentialSampler(train_dataset) if args.sortaGrad else RandomSampler(train_dataset)
     train_loader = AudioDataLoader(train_dataset, batch_size=args.batch_size,
-                                   num_workers=args.num_workers, sampler=sampler)
+                                   num_workers=args.num_workers)
     test_loader = AudioDataLoader(test_dataset, batch_size=args.batch_size,
                                   num_workers=args.num_workers)
 
     rnn_type = args.rnn_type.lower()
     assert rnn_type in supported_rnns, "rnn_type should be either lstm, rnn or gru"
     model = DeepSpeech(rnn_hidden_size=args.hidden_size,
-                       nb_layers=args.hidden_layers,
-                       labels=labels,
+                       nb_layers=args.hidden_layers, num_classes=len(labels),
                        rnn_type=supported_rnns[rnn_type],
-                       audio_conf=audio_conf,
+                       sample_rate=args.sample_rate, window_size=args.window_size,
                        bidirectional=True)
     parameters = model.parameters()
     optimizer = torch.optim.SGD(parameters, lr=args.lr,
                                 momentum=args.momentum, nesterov=True)
-    decoder = ArgMaxDecoder(labels)
 
     if args.continue_from:
         print("Loading checkpoint model %s" % args.continue_from)
         package = torch.load(args.continue_from)
         model.load_state_dict(package['state_dict'])
-        optimizer.load_state_dict(package['optim_dict'])
+        # optimizer.load_state_dict(package['optim_dict'])
         start_epoch = int(package.get('epoch', None) or 1) - 1  # Python index start at 0 for training
         start_iter = package.get('iteration', None)
         if start_iter is None:
@@ -147,19 +169,19 @@ def main():
         else:
             start_iter += 1
         avg_loss = int(package.get('avg_loss', 0))
-        if args.visdom and \
-                        package['loss_results'] is not None and start_epoch > 0:  # Add previous scores to visdom graph
-            epoch = start_epoch
-            loss_results, cer_results, wer_results = package['loss_results'], package['cer_results'], package[
-                'wer_results']
-            x_axis = epochs[0:epoch]
-            y_axis = [loss_results[0:epoch], wer_results[0:epoch], cer_results[0:epoch]]
-            for x in range(len(viz_windows)):
-                viz_windows[x] = viz.line(
-                    X=x_axis,
-                    Y=y_axis[x],
-                    opts=opts[x],
-                )
+        # if args.visdom and \
+        #                 package['loss_results'] is not None and start_epoch > 0:  # Add previous scores to visdom graph
+        #     epoch = start_epoch
+        #     loss_results, cer_results, wer_results = package['loss_results'], package['cer_results'], package[
+        #         'wer_results']
+        #     x_axis = epochs[0:epoch]
+        #     y_axis = [loss_results[0:epoch], wer_results[0:epoch], cer_results[0:epoch]]
+        #     for x in range(len(viz_windows)):
+        #         viz_windows[x] = viz.line(
+        #             X=x_axis,
+        #             Y=y_axis[x],
+        #             opts=opts[x],
+        #         )
     else:
         avg_loss = 0
         start_epoch = 0
@@ -197,6 +219,12 @@ def main():
             loss = criterion(out, targets, sizes, target_sizes)
             loss = loss / inputs.size(0)  # average the loss by minibatch
 
+            # TODO START OF TEST SECTION
+            if loss.data.sum() < 0:
+                print "Loss < 0, skipping."
+                continue
+            # TODO END OF TEST SECTION
+
             loss_sum = loss.data.sum()
             inf = float("inf")
             if loss_sum == inf or loss_sum == -inf:
@@ -232,9 +260,11 @@ def main():
             if args.checkpoint_per_batch > 0 and i > 0 and (i + 1) % args.checkpoint_per_batch == 0:
                 file_path = '%s/deepspeech_checkpoint_epoch_%d_iter_%d.pth.tar' % (save_folder, epoch + 1, i + 1)
                 print("Saving checkpoint model to %s" % file_path)
-                torch.save(DeepSpeech.serialize(model, optimizer=optimizer, epoch=epoch, iteration=i, loss_results=loss_results,
-                                                wer_results=wer_results, cer_results=cer_results, avg_loss=avg_loss),
-                           file_path)
+                torch.save(
+                    checkpoint(model, optimizer, args, audio_conf, labels, epoch=epoch, iteration=i,
+                               loss_results=loss_results, wer_results=wer_results, cer_results=cer_results,
+                               avg_loss=avg_loss, rnn_type=rnn_type),
+                    file_path)
         avg_loss /= len(train_loader)
 
         print('Training Summary Epoch: [{0}]\t'
@@ -290,9 +320,9 @@ def main():
             loss_results[epoch] = avg_loss
             wer_results[epoch] = wer
             cer_results[epoch] = cer
-            n = epoch + 1
-            x_axis = epochs[0:n]
-            y_axis = [loss_results[0:n], wer_results[0:n], cer_results[0:n]]
+            epoch += 1
+            x_axis = epochs[0:epoch]
+            y_axis = [loss_results[0:epoch], wer_results[0:epoch], cer_results[0:epoch]]
             for x in range(len(viz_windows)):
                 if viz_windows[x] is None:
                     viz_windows[x] = viz.line(
@@ -309,22 +339,17 @@ def main():
                     )
         if args.checkpoint:
             file_path = '%s/deepspeech_%d.pth.tar' % (save_folder, epoch + 1)
-            torch.save(DeepSpeech.serialize(model, optimizer=optimizer, epoch=epoch, loss_results=loss_results,
-                                            wer_results=wer_results, cer_results=cer_results),
+            torch.save(checkpoint(model, optimizer, args, audio_conf, labels, epoch, loss_results=loss_results,
+                                  wer_results=wer_results, cer_results=cer_results, rnn_type=rnn_type),
                        file_path)
         # anneal lr
         optim_state = optimizer.state_dict()
         optim_state['param_groups'][0]['lr'] = optim_state['param_groups'][0]['lr'] / args.learning_anneal
         optimizer.load_state_dict(optim_state)
-
-        if args.sortaGrad and epoch == 0:
-            print("Switching to random batches")
-            sampler = RandomSampler(train_dataset)
-            train_loader.sampler = sampler
         print('Learning rate annealed to: {lr:.6f}'.format(lr=optim_state['param_groups'][0]['lr']))
 
         avg_loss = 0
-    torch.save(DeepSpeech.serialize(model, optimizer=optimizer), args.final_model_path)
+    torch.save(checkpoint(model, optimizer, args, audio_conf, labels, rnn_type=rnn_type), args.final_model_path)
 
 
 if __name__ == '__main__':
