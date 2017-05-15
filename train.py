@@ -131,6 +131,7 @@ def main():
     else:
         criterion = CTCLoss()
 
+
     audio_conf = dict(sample_rate=args.sample_rate,
                       window_size=args.window_size,
                       window_stride=args.window_stride,
