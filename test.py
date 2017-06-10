@@ -21,22 +21,21 @@ parser.add_argument('--val_manifest', metavar='DIR',
                     help='path to validation manifest csv', default='data/val_manifest.csv')
 parser.add_argument('--batch_size', default=20, type=int, help='Batch size for training')
 parser.add_argument('--num_workers', default=4, type=int, help='Number of workers used in dataloading')
+parser.add_argument('--beam_size', dest='beam_size', default=12, type=int, help='Size of beam in decoder beam search.')
+parser.add_argument('--decoder', default='argmax', help='Type of the decoder used for inference.')
 args = parser.parse_args()
 
 if __name__ == '__main__':
-    model = DeepSpeech.load_model(args.model_path)
-    if args.cuda:
-        model = torch.nn.DataParallel(model).cuda()
+    model = DeepSpeech.load_model(args.model_path, cuda=args.cuda)
     model.eval()
 
-    with open(args.labels_path) as label_file:
-        labels = str(''.join(json.load(label_file)))
-    decoder = ArgMaxDecoder(labels)
+    labels = DeepSpeech.get_labels(model)
+    audio_conf = DeepSpeech.get_audio_conf(model)
 
-    audio_conf = dict(sample_rate=args.sample_rate,
-                      window_size=args.window_size,
-                      window_stride=args.window_stride,
-                      window=args.window)
+    if args.decoder == 'beamsearch':
+        decoder = BeamSearchDecoder(labels, beam_size=args.beam_size)
+    else:
+        decoder = ArgMaxDecoder(labels)
 
     test_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=args.val_manifest, labels=labels,
                                       normalize=True)
