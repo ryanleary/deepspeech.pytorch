@@ -10,9 +10,13 @@ supported_rnns = {
     'gru': nn.GRU
 }
 <<<<<<< HEAD
+<<<<<<< HEAD
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 =======
 >>>>>>> init
+=======
+supported_rnns_inv = dict((v,k) for k,v in supported_rnns.items())
+>>>>>>> Fix issues
 
 
 class SequenceWise(nn.Module):
@@ -75,9 +79,26 @@ class BatchRNN(nn.Module):
 
 
 class DeepSpeech(nn.Module):
+<<<<<<< HEAD
     def __init__(self, rnn_type=nn.RNN, labels="abc", rnn_hidden_size=768, nb_layers=5, audio_conf={},
                  bidirectional=True):
+=======
+    def __init__(self, rnn_type=nn.LSTM, labels="abc", rnn_hidden_size=768, nb_layers=5, audio_conf={}, bidirectional=True):
+>>>>>>> Fix issues
         super(DeepSpeech, self).__init__()
+
+        # model metadata needed for serialization/deserialization
+        self._version = '0.0.1'
+        self._hidden_size = rnn_hidden_size
+        self._hidden_layers = nb_layers
+        self._rnn_type = rnn_type
+        self._audio_conf = audio_conf or {}
+        self._labels = labels
+
+        sample_rate = self._audio_conf.get("sample_rate", 16000)
+        window_size = self._audio_conf.get("window_size", 0.02)
+        num_classes = len(self._labels)
+
         self.conv = nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=(41, 11), stride=(2, 2)),
             nn.BatchNorm2d(32),
@@ -123,15 +144,20 @@ class DeepSpeech(nn.Module):
         return x
 
     @classmethod
-    def load_model(cls, package, cuda):
+    def load_model(cls, path, cuda=False):
+        package = torch.load(path, map_location=lambda storage, loc: storage)
         model = cls(rnn_hidden_size=package['hidden_size'], nb_layers=package['hidden_layers'],
+<<<<<<< HEAD
                     labels=package['labels'], audio_conf=package['audio_conf'],
                     rnn_type=supported_rnns[package['rnn_type']])
         model.load_state_dict(package['state_dict'])
 
+=======
+                    labels=package['labels'], audio_conf=package['audio_conf'], rnn_type=supported_rnns[package['rnn_type']])
+        model.load_state_dict(package['state_dict'])
+>>>>>>> Fix issues
         if cuda:
             model = torch.nn.DataParallel(model).cuda()
-        model.load_state_dict(package['state_dict'])
         return model
 
     @staticmethod
@@ -210,6 +236,7 @@ if __name__ == '__main__':
         print("  Current Loss:      {0:.3f}".format(package['loss_results'][epochs - 1]))
         print("  Current CER:       {0:.3f}".format(package['cer_results'][epochs - 1]))
         print("  Current WER:       {0:.3f}".format(package['wer_results'][epochs - 1]))
+
 
     if package.get('meta', None) is not None:
         print("")

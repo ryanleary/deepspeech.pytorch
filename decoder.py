@@ -36,7 +36,7 @@ class Decoder(object):
         # e.g. labels = "_'ABCDEFGHIJKLMNOPQRSTUVWXYZ#"
         self.labels = labels
         self.int_to_char = dict([(i, c) for (i, c) in enumerate(labels)])
-        self.char_to_int = dict([(c, i) for i, c in self.int_to_char.iteritems()])
+        self.char_to_int = dict([(c, i) for i, c in self.int_to_char.items()])
         self.blank_index = blank_index
         self.space_index = space_index
 
