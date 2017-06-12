@@ -5,7 +5,7 @@ import torch
 from torch.autograd import Variable
 
 from data.data_loader import SpectrogramDataset, AudioDataLoader
-from decoder import ArgMaxDecoder, PrefixBeamCTCDecoder, Scorer
+from decoder import ArgMaxDecoder, PrefixBeamCTCDecoder, KenLMScorer, VocabularyScorer
 from model import DeepSpeech
 
 parser = argparse.ArgumentParser(description='DeepSpeech prediction')
@@ -36,7 +36,7 @@ if __name__ == '__main__':
     if args.decoder == "beam":
         scorer = None
         if args.lm_path is not None:
-            scorer = Scorer(args.lm_alpha, args.lm_beta, args.lm_path, args.vocab_path)
+            scorer = KenLMScorer(args.lm_alpha, args.lm_beta, args.lm_path, args.vocab_path)
         if args.vocab_path is not None:
             scorer = VocabularyScorer(args.vocab_path)
         decoder = PrefixBeamCTCDecoder(labels, scorer, beam_width=args.beam_width, top_n=1, blank_index=labels.index('_'), space_index=labels.index(' '))
