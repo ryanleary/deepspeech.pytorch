@@ -22,6 +22,7 @@ beam_args.add_argument('--beam_width', default=10, type=int, help='Beam width to
 beam_args.add_argument('--lm_path', default=None, type=str, help='Path to an (optional) kenlm language model for use with beam search')
 beam_args.add_argument('--lm_alpha', default=0.8, type=float, help='Language model weight')
 beam_args.add_argument('--lm_beta', default=4, type=float, help='Language model word penalty')
+beam_args.add_argument('--vocab_path', default=None, type=str, help='Path to an (optional) dictionary file to constrain lexicon')
 args = parser.parse_args()
 
 if __name__ == '__main__':
@@ -35,8 +36,9 @@ if __name__ == '__main__':
     if args.decoder == "beam":
         scorer = None
         if args.lm_path is not None:
-            score_class = Scorer(args.lm_alpha, args.lm_beta, args.lm_path)
-            scorer = score_class.evaluate
+            scorer = Scorer(args.lm_alpha, args.lm_beta, args.lm_path, args.vocab_path)
+        if args.vocab_path is not None:
+            scorer = VocabularyScorer(args.vocab_path)
         decoder = PrefixBeamCTCDecoder(labels, scorer, beam_width=args.beam_width, top_n=1, blank_index=labels.index('_'), space_index=labels.index(' '))
     else:
         decoder = ArgMaxDecoder(labels)

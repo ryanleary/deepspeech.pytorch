@@ -145,7 +145,13 @@ class ArgMaxDecoder(Decoder):
         strings = self.convert_to_strings(max_probs.view(max_probs.size(0), max_probs.size(1)), sizes)
         return [[(1.0, x)] for x in self.process_strings(strings, remove_repetitions=True)]
 
+
 class Scorer(object):
+    def evaluate(self, sentence):
+        raise NotImplementedError
+
+
+class KenLMScorer(Scorer):
     """
     External defined scorer to evaluate a sentence in beam search
                decoding, consisting of language model and word count.
@@ -158,12 +164,14 @@ class Scorer(object):
     :type model_path: basestring
     """
 
-    def __init__(self, alpha, beta, model_path):
+    def __init__(self, alpha, beta, model_path, vocab_path=None):
         self._alpha = alpha
         self._beta = beta
         if not os.path.isfile(model_path):
             raise IOError("Invalid language model path: %s" % model_path)
         self._language_model = kenlm.LanguageModel(model_path)
+        self._vocab_scorer = VocabularyScorer(vocab_path) if vocab_path is not None else None
+
 
     # n-gram language model scoring
     def language_model_score(self, sentence):
@@ -174,15 +182,41 @@ class Scorer(object):
 
     # word insertion term
     def word_count(self, sentence):
-        words = sentence.strip().split(' ')
+        words = sentence.strip().split()
         return len(words)
 
     # execute evaluation
     def evaluate(self, sentence):
         lm = self.language_model_score(sentence)
         word_cnt = self.word_count(sentence)
-        score = np.power(lm, self._alpha) \
+        vocab_score = self._vocab_scorer.evaluate(sentence) if self._vocab_scorer is not None else 1
+        score = vocab_score * np.power(lm, self._alpha) \
                 * np.power(word_cnt, self._beta)
+        return score
+
+class VocabularyScorer(object):
+    def __init__(self, vocab_path):
+        if not os.path.isfile(vocab_path):
+            raise IOError("Invalid dictionary path: %s" % vocab_path)
+        self._vocab = set([])
+        with open(vocab_path, 'r') as fh:
+            for line in fh:
+                self._vocab.add(line.strip())
+
+    # execute evaluation
+    def evaluate(self, sentence):
+        # lm = self.language_model_score(sentence)
+        # word_cnt = self.word_count(sentence)
+        # score = np.power(lm, self._alpha) \
+        #         * np.power(word_cnt, self._beta)
+        words = sentence.strip().split()
+        if len(words) > 0:
+            if words[-1] in self._vocab:
+                return 1
+            else:
+                return 0.0000001
+        else:
+            return 1
         return score
 
 
@@ -211,7 +245,7 @@ class PrefixBeamCTCDecoder(Decoder):
             probs_b_prev, probs_nb_prev = {'\t': 1.0}, {'\t': 0.0}
             probs_s = torch.nn.functional.softmax(torch.autograd.Variable(probs[s], volatile=True)).data
             # extend prefix in loop
-            seq_len = T if sizes is None else sizes[s]
+            seq_len = T if sizes is None else sizes.data[s]
             for time_step in range(seq_len):
                 # the set containing candidate prefixes
                 prefix_set_next = {}
@@ -241,7 +275,7 @@ class PrefixBeamCTCDecoder(Decoder):
                                     score = 1.0
                                 else:
                                     prefix = l[1:]
-                                    score = self._scorer(prefix)
+                                    score = self._scorer.evaluate(prefix)
                                 probs_nb_cur[l_plus] += score * prob[c] * (
                                     probs_b_prev[l] + probs_nb_prev[l])
                             else:
