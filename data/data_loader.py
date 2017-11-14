@@ -105,11 +105,17 @@ class SpectrogramParser(AudioParser):
             add_noise = np.random.binomial(1, self.noise_prob)
             if add_noise:
                 y = self.noiseInjector.inject_noise(y)
+        return self.parse_audio_data(y)
+
+    def parse_transcript(self, transcript_path):
+        raise NotImplementedError
+
+    def parse_audio_data(self, raw_data):
         n_fft = int(self.sample_rate * self.window_size)
         win_length = n_fft
         hop_length = int(self.sample_rate * self.window_stride)
         # STFT
-        D = librosa.stft(y, n_fft=n_fft, hop_length=hop_length,
+        D = librosa.stft(raw_data, n_fft=n_fft, hop_length=hop_length,
                          win_length=win_length, window=self.window)
         spect, phase = librosa.magphase(D)
         # S = log(S+1)
@@ -120,11 +126,8 @@ class SpectrogramParser(AudioParser):
             std = spect.std()
             spect.add_(-mean)
             spect.div_(std)
-
         return spect
 
-    def parse_transcript(self, transcript_path):
-        raise NotImplementedError
 
 
 class SpectrogramDataset(Dataset, SpectrogramParser):

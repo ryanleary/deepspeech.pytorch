@@ -62,13 +62,71 @@ class BatchRNN(nn.Module):
     def flatten_parameters(self):
         self.rnn.flatten_parameters()
 
-    def forward(self, x):
+    def forward(self, x, h0=None):
         if self.batch_norm is not None:
             x = self.batch_norm(x)
-        x, _ = self.rnn(x)
+        x, hx = self.rnn(x, h0)
         if self.bidirectional:
             x = x.view(x.size(0), x.size(1), 2, -1).sum(2).view(x.size(0), x.size(1), -1)  # (TxNxH*2) -> (TxNxH) by sum
-        return x
+        return x, hx
+
+class RNNSequential(nn.Module):
+    r"""A sequential container.
+    Modules will be added to it in the order they are passed in the constructor.
+    Alternatively, an ordered dict of modules can also be passed in.
+
+    To make it easier to understand, given is a small example::
+
+        # Example of using Sequential
+        model = nn.Sequential(
+                  nn.Conv2d(1,20,5),
+                  nn.ReLU(),
+                  nn.Conv2d(20,64,5),
+                  nn.ReLU()
+                )
+
+        # Example of using Sequential with OrderedDict
+        model = nn.Sequential(OrderedDict([
+                  ('conv1', nn.Conv2d(1,20,5)),
+                  ('relu1', nn.ReLU()),
+                  ('conv2', nn.Conv2d(20,64,5)),
+                  ('relu2', nn.ReLU())
+                ]))
+    """
+
+    def __init__(self, *args):
+        super(RNNSequential, self).__init__()
+        if len(args) == 1 and isinstance(args[0], OrderedDict):
+            for key, module in args[0].items():
+                self.add_module(key, module)
+        else:
+            for idx, module in enumerate(args):
+                self.add_module(str(idx), module)
+
+    def __getitem__(self, idx):
+        if not (-len(self) <= idx < len(self)):
+            raise IndexError('index {} is out of range'.format(idx))
+        if idx < 0:
+            idx += len(self)
+        it = iter(self._modules.values())
+        for i in range(idx):
+            next(it)
+        return next(it)
+
+    def __len__(self):
+        return len(self._modules)
+
+    def __dir__(self):
+        keys = super(Sequential, self).__dir__()
+        keys = [key for key in keys if not key.isdigit()]
+        return keys
+
+    def forward(self, input, h0):
+        hx = Variable(h0.data.new(*h0.shape).zero_(), requires_grad=False)
+        for i, module in enumerate(self._modules.values()):
+            input, hx_i = module(input, h0[i])
+            hx[i] = hx_i.data
+        return input, hx
 
 
 class Lookahead(nn.Module):
@@ -113,7 +171,7 @@ class Lookahead(nn.Module):
 
 class DeepSpeech(nn.Module):
     def __init__(self, rnn_type=nn.LSTM, labels="abc", rnn_hidden_size=768, nb_layers=5, audio_conf=None,
-                 bidirectional=True, context=20):
+                 bidirectional=True, context=20, padding=True):
         super(DeepSpeech, self).__init__()
 
         # model metadata needed for serialization/deserialization
@@ -131,11 +189,13 @@ class DeepSpeech(nn.Module):
         window_size = self._audio_conf.get("window_size", 0.02)
         num_classes = len(self._labels)
 
+        input_padding = (0, 10) if padding else (0, 0)
+
         self.conv = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=(41, 11), stride=(2, 2), padding=(0, 10)),
+            nn.Conv2d(1, 32, kernel_size=(41, 11), stride=(2, 2), padding=input_padding),
             nn.BatchNorm2d(32),
             nn.Hardtanh(0, 20, inplace=True),
-            nn.Conv2d(32, 32, kernel_size=(21, 11), stride=(2, 1), ),
+            nn.Conv2d(32, 32, kernel_size=(21, 11), stride=(2, 1), padding=(0, 2)),
             nn.BatchNorm2d(32),
             nn.Hardtanh(0, 20, inplace=True)
         )
@@ -153,7 +213,7 @@ class DeepSpeech(nn.Module):
             rnn = BatchRNN(input_size=rnn_hidden_size, hidden_size=rnn_hidden_size, rnn_type=rnn_type,
                            bidirectional=bidirectional)
             rnns.append(('%d' % (x + 1), rnn))
-        self.rnns = nn.Sequential(OrderedDict(rnns))
+        self.rnns = RNNSequential(OrderedDict(rnns))
         self.lookahead = nn.Sequential(
             # consider adding batch norm?
             Lookahead(rnn_hidden_size, context=context),
@@ -169,15 +229,36 @@ class DeepSpeech(nn.Module):
         )
         self.inference_log_softmax = InferenceBatchLogSoftmax()
 
-    def forward(self, x):
+    def get_init_rnn_hidden(self, x):
+        num_directions = 2 if self._bidirectional else 1
+        rnn_layers = 1
+        max_batch_size = x.shape[1]
+        h0 = torch.autograd.Variable(x.data.new(self._hidden_layers,
+                                                rnn_layers * num_directions,
+                                                max_batch_size,
+                                                self._hidden_size).zero_(), requires_grad=False)
+        if self._rnn_type == nn.LSTM:
+            h0 = (h0, h0)
+        return h0
+
+    def forward(self, x, h0=None):
+        x, hx = self.fwd_rnn(x, h0)
+        x = self.fwd_final(x)
+        return x, hx
+
+    def fwd_rnn(self, x, h0=None):
         x = self.conv(x)
 
         sizes = x.size()
         x = x.view(sizes[0], sizes[1] * sizes[2], sizes[3])  # Collapse feature dimension
         x = x.transpose(1, 2).transpose(0, 1).contiguous()  # TxNxH
 
-        x = self.rnns(x)
+        if h0 is None:
+            h0 = self.get_init_rnn_hidden(x)
+        x, hx = self.rnns(x, h0)
+        return x, hx
 
+    def fwd_final(self, x):
         if not self._bidirectional:  # no need for lookahead layer in bidirectional
             x = self.lookahead(x)
 
@@ -192,7 +273,7 @@ class DeepSpeech(nn.Module):
         package = torch.load(path, map_location=lambda storage, loc: storage)
         model = cls(rnn_hidden_size=package['hidden_size'], nb_layers=package['hidden_layers'],
                     labels=package['labels'], audio_conf=package['audio_conf'],
-                    rnn_type=supported_rnns[package['rnn_type']], bidirectional=package['bidirectional'])
+                    rnn_type=supported_rnns[package['rnn_type']], bidirectional=package.get('bidirectional', True))
         # the blacklist parameters are params that were previous erroneously saved by the model
         # care should be taken in future versions that if batch_norm on the first rnn is required
         # that it be named something else
@@ -212,7 +293,7 @@ class DeepSpeech(nn.Module):
     def load_model_package(cls, package, cuda=False):
         model = cls(rnn_hidden_size=package['hidden_size'], nb_layers=package['hidden_layers'],
                     labels=package['labels'], audio_conf=package['audio_conf'],
-                    rnn_type=supported_rnns[package['rnn_type']], bidirectional=package['bidirectional'])
+                    rnn_type=supported_rnns[package['rnn_type']], bidirectional=package.get('bidirectional', True))
         model.load_state_dict(package['state_dict'])
         if cuda:
             model = torch.nn.DataParallel(model).cuda()

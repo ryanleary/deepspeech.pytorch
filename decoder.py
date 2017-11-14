@@ -111,7 +111,10 @@ class BeamCTCDecoder(Decoder):
         for p, paths in enumerate(out):
             utterances = []
             for u, utt in enumerate(paths):
-                utterances.append(''.join(map(lambda x: self.int_to_char[x], utt[0:seq_len[p][u]])))
+                if seq_len[p][u] == 0:
+                    utterances.append("")
+                else:
+                    utterances.append(''.join(map(lambda x: self.int_to_char[x], utt[0:seq_len[p][u]])))
             results.append(utterances)
         return results
 
@@ -120,7 +123,10 @@ class BeamCTCDecoder(Decoder):
         for p, paths in enumerate(offsets):
             utterances = []
             for u, utt in enumerate(paths):
-                utterances.append(utt[0:sizes[p][u]].numpy().tolist())
+                if sizes[p][u] == 0:
+                    utterances.append([])
+                else:
+                    utterances.append(utt[0:sizes[p][u]].numpy().tolist())
             results.append(utterances)
         return results
 
