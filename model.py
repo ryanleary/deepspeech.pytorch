@@ -14,6 +14,39 @@ supported_rnns = {
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
+class ClippedReLU(nn.Module):
+    r"""Applies the rectified linear unit function element-wise
+    :math:`{ReLU}(x)= max(0, x)`
+
+    Args:
+        inplace: can optionally do the operation in-place. Default: ``False``
+
+    Shape:
+        - Input: :math:`(N, *)` where `*` means, any number of additional
+          dimensions
+        - Output: :math:`(N, *)`, same shape as the input
+
+    Examples::
+
+        >>> m = nn.ReLU()
+        >>> input = autograd.Variable(torch.randn(2))
+        >>> print(input)
+        >>> print(m(input))
+    """
+
+    def __init__(self, max_val=20.0, inplace=False):
+        super(ClippedReLU, self).__init__()
+        self.max_val = max_val
+        self.inplace = inplace
+
+    def forward(self, input):
+        return F.threshold(input, 0, 0, self.inplace).clamp(min=0.0, max=self.max_val)
+
+
+    def __repr__(self):
+        inplace_str = 'inplace' if self.inplace else ''
+        return self.__class__.__name__ + '(' \
+            + inplace_str + ')'
 
 class SequenceWise(nn.Module):
     def __init__(self, module):
@@ -134,10 +167,12 @@ class DeepSpeech(nn.Module):
         self.conv = nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=(41, 11), stride=(2, 2), padding=(0, 10)),
             nn.BatchNorm2d(32),
-            nn.Hardtanh(0, 20, inplace=True),
+            ClippedReLU(),
+            #nn.Hardtanh(0, 20, inplace=True),
             nn.Conv2d(32, 32, kernel_size=(21, 11), stride=(2, 1), ),
             nn.BatchNorm2d(32),
-            nn.Hardtanh(0, 20, inplace=True)
+            #nn.Hardtanh(0, 20, inplace=True),
+            ClippedReLU()
         )
         # Based on above convolutions and spectrogram size using conv formula (W - F + 2P)/ S+1
         rnn_input_size = int(math.floor((sample_rate * window_size) / 2) + 1)
@@ -157,7 +192,8 @@ class DeepSpeech(nn.Module):
         self.lookahead = nn.Sequential(
             # consider adding batch norm?
             Lookahead(rnn_hidden_size, context=context),
-            nn.Hardtanh(0, 20, inplace=True)
+            #nn.Hardtanh(0, 20, inplace=True)
+            ClippedReLU()
         ) if not bidirectional else None
 
         fully_connected = nn.Sequential(
