@@ -41,6 +41,7 @@ class ClippedReLU(nn.Module):
 
     def forward(self, input):
         return F.threshold(input, 0, 0, self.inplace).clamp(min=0.0, max=self.max_val)
+        #return F.threshold(input, 0, 0).clamp(min=0.0, max=self.max_val)
 
 
     def __repr__(self):
@@ -98,7 +99,7 @@ class BatchRNN(nn.Module):
     def forward(self, x):
         if self.batch_norm is not None:
             x = self.batch_norm(x)
-        x, _ = self.rnn(x)
+        x, _ = self.rnn(x, hx=Variable(torch.zeros(2,1,600)))
         if self.bidirectional:
             x = x.view(x.size(0), x.size(1), 2, -1).sum(2).view(x.size(0), x.size(1), -1)  # (TxNxH*2) -> (TxNxH) by sum
         return x
