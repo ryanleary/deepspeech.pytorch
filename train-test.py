@@ -91,7 +91,7 @@ def get_subbatches(data_tuple, nominal_batch_size, max_size=0):
         shape = a.size()
         max_batch_size = min(nominal_batch_size, int(max_size//(shape[1]*shape[2]*shape[3])))
         if max_batch_size < nominal_batch_size:
-            print("Batch too large. Subbatching.")
+            print("  Warn: Batch too large. Subbatching.")
             for i in range(0, shape[0], max_batch_size):
                 yield (a[i:i+max_batch_size].contiguous(), b[i:i+max_batch_size].contiguous(), c[i:i+max_batch_size].contiguous(), d[i:i+max_batch_size].contiguous())
         else:
@@ -351,9 +351,7 @@ if __name__ == '__main__':
                 break
             # measure data loading time
             data_time.update(time.time() - end)
-            loss = 0
-            for inputs, targets, input_percentages, target_sizes in get_subbatches(data, args.batch_size, max_size=10000000):
-                print("in subbatch loop")
+            for inputs, targets, input_percentages, target_sizes in get_subbatches(data, args.batch_size, max_size=0):
                 subbatch_frac = inputs.size(0)/args.batch_size
 
                 inputs = Variable(inputs, requires_grad=False)
@@ -369,36 +367,36 @@ if __name__ == '__main__':
                 seq_length = out.size(0)
                 sizes = Variable(input_percentages.mul_(int(seq_length)).int(), requires_grad=False)
 
-                loss += (criterion(out, targets, sizes, target_sizes) * subbatch_frac)
+                loss = (criterion(out, targets, sizes, target_sizes) * subbatch_frac)
                 del out
                 del inputs
                 del target_sizes
                 del targets
                 del seq_length
                 del sizes
-            loss = loss / args.batch_size  # average the loss by minibatch
 
-            loss_sum = loss.data.sum()
-            inf = float("inf")
-            if loss_sum == inf or loss_sum == -inf:
-                print("WARNING: received an inf loss, setting loss value to 0")
-                loss_value = 0
-            else:
-                loss_value = loss.data[0]
+                loss_sum = loss.data.sum()
+                inf = float("inf")
+                if loss_sum == inf or loss_sum == -inf:
+                    print("WARNING: received an inf loss, setting loss value to 0")
+                    loss_value = 0
+                else:
+                    loss_value = loss.data[0]
 
-            ts.avg_loss += loss_value
-            losses.update(loss_value, args.batch_size)
+                ts.avg_loss += loss_value
+                losses.update(loss_value, args.batch_size)
 
-            # compute gradient
-            optimizer.zero_grad()
-            loss.backward()
+                # compute gradient
+                optimizer.zero_grad()
+                loss.backward()
 
-            torch.nn.utils.clip_grad_norm(model.parameters(), args.max_norm)
-            # SGD step
-            optimizer.step()
+                torch.nn.utils.clip_grad_norm(model.parameters(), args.max_norm)
+                # SGD step
+                optimizer.step()
+                del loss
 
-            if args.cuda:
-                torch.cuda.synchronize()
+                if args.cuda:
+                    torch.cuda.synchronize()
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -417,7 +415,6 @@ if __name__ == '__main__':
                                                 loss_results=ts.loss_results,
                                                 wer_results=ts.wer_results, cer_results=ts.cer_results, avg_loss=ts.avg_loss),
                            file_path)
-            del loss
         ts.avg_loss /= len(train_sampler)
 
         print('Training Summary Epoch: [{0}]\tAverage Loss {loss:.3f}\t'.format(
@@ -459,3 +456,4 @@ if __name__ == '__main__':
         if not args.no_shuffle:
             print("Shuffling batches...")
             train_sampler.shuffle()
+
