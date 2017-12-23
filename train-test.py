@@ -109,7 +109,7 @@ def create_dir_safe(path):
 class BaseLogger(object):
     def __init__(self):
         pass
-    def log_epoch(self, epoch, loss_results, wer_results, cer_results):
+    def log_epoch(self, epoch, loss_results, wer_results, cer_results, eval_loss=None):
         pass
     def log_previous_epochs(self, end_epoch, loss_results, wer_results, cer_results):
         pass
@@ -122,7 +122,7 @@ class VizLogger(BaseLogger):
         self.viz_window = None
         self.epochs = torch.arange(1, epochs+1)
 
-    def log_epoch(self, epoch, loss_results, wer_results, cer_results):
+    def log_epoch(self, epoch, loss_results, wer_results, cer_results, eval_loss=None):
         x_axis = self.epochs[0:epoch + 1]
         y_axis = torch.stack((loss_results[0:epoch + 1], wer_results[0:epoch + 1], cer_results[0:epoch + 1]), dim=1)
         if self.viz_window is None:
@@ -152,6 +152,9 @@ class VizLogger(BaseLogger):
 class TensorboardLogger(BaseLogger):
     def __init__(self, _id, log_dir, model=None):
         from tensorboardX import SummaryWriter
+        import socket
+        from datetime import datetime
+        log_dir = os.path.join(log_dir, datetime.now().strftime('%b%d_%H-%M-%S')+'_'+socket.gethostname()+'_'+_id)
         try:
             os.makedirs(log_dir)
         except OSError as e:
@@ -168,14 +171,19 @@ class TensorboardLogger(BaseLogger):
                 raise
         self._writer = SummaryWriter(log_dir)
         self._id = _id
+        self._model = model
 
-    def log_epoch(self, epoch, loss_results, wer_results, cer_results):
-        values = {
-            'Avg Train Loss': loss_results[epoch],
-            'Avg WER': wer_results[epoch],
-            'Avg CER': cer_results[epoch]
-        }
-        self._writer.add_scalars(self._id, values, epoch + 1)
+    def log_epoch(self, epoch, loss_results, wer_results, cer_results, eval_loss=None):
+        # values = {
+        #     'Avg Train Loss': loss_results[epoch],
+        #     'Avg WER': wer_results[epoch],
+        #     'Avg CER': cer_results[epoch]
+        # }
+        # self._writer.add_scalars(self._id, values, epoch + 1)
+        self._writer.add_scalar("loss/train", loss_results[epoch], epoch+1)
+        self._writer.add_scalar("loss/val", eval_loss, epoch+1)
+        self._writer.add_scalar("accuracy/wer", wer_results[epoch], epoch+1)
+        self._writer.add_scalar("accuracy/cer", cer_results[epoch], epoch+1)
         if self._model:
             for tag, value in self._model.named_parameters():
                 tag = tag.replace('.', '/')
@@ -255,7 +263,7 @@ class TrainStats(object):
 
 def evaluate(test_loader, model):
     model.eval()
-    total_cer, total_wer = 0, 0
+    total_cer, total_wer, total_loss = 0, 0, 0
     for i, (data) in tqdm(enumerate(test_loader), total=len(test_loader)):
         inputs, targets, input_percentages, target_sizes = data
 
@@ -271,12 +279,17 @@ def evaluate(test_loader, model):
         if args.cuda:
             inputs = inputs.cuda()
 
+        target_sizes = Variable(target_sizes, requires_grad=False)
+        targets = Variable(targets, requires_grad=False)
+
         out = model(inputs)
         out = out.transpose(0, 1)  # TxNxH
         seq_length = out.size(0)
-        sizes = input_percentages.mul_(int(seq_length)).int()
+        sizes = Variable(input_percentages.mul_(int(seq_length)).int(), requires_grad=False)
 
-        decoded_output, _ = decoder.decode(out.data, sizes)
+        total_loss += (criterion(out, targets, sizes, target_sizes) / inputs.size(0))
+
+        decoded_output, _ = decoder.decode(out.data, sizes.data)
         target_strings = decoder.convert_to_strings(split_targets)
         wer, cer = 0, 0
         for x in range(len(target_strings)):
@@ -291,7 +304,8 @@ def evaluate(test_loader, model):
         del out
     wer = (total_wer / len(test_loader.dataset)) * 100
     cer = (total_cer / len(test_loader.dataset)) * 100
-    return wer, cer
+    loss = (total_loss / len(test_loader.dataset))
+    return wer, cer, loss
 
 if __name__ == '__main__':
     torch.manual_seed(123456)
@@ -301,12 +315,6 @@ if __name__ == '__main__':
     save_folder = args.save_folder
     create_dir_safe(save_folder)
 
-    viz = BaseLogger()
-    if args.visdom:
-        viz = VizLogger(args.id, args.epochs)
-    if args.tensorboard:
-        viz = TensorboardLogger()
-
     if args.continue_from:  # Starting from previous model
         print("Loading checkpoint model %s" % args.continue_from)
         model, labels, audio_conf, optimizer, ts = load_model(args.continue_from, args.epochs, finetune=args.finetune, viz=viz)
@@ -315,6 +323,12 @@ if __name__ == '__main__':
 
     if args.cuda:
         model = torch.nn.DataParallel(model).cuda()
+
+    viz = BaseLogger()
+    if args.visdom:
+        viz = VizLogger(args.id, args.epochs)
+    if args.tensorboard:
+        viz = TensorboardLogger(args.id, args.log_dir, model=model)
 
     print(model)
     print("Number of parameters: %d" % DeepSpeech.get_param_size(model))
@@ -351,7 +365,7 @@ if __name__ == '__main__':
                 break
             # measure data loading time
             data_time.update(time.time() - end)
-            for inputs, targets, input_percentages, target_sizes in get_subbatches(data, args.batch_size, max_size=0):
+            for inputs, targets, input_percentages, target_sizes in get_subbatches(data, args.batch_size, max_size=2000000):
                 subbatch_frac = inputs.size(0)/args.batch_size
 
                 inputs = Variable(inputs, requires_grad=False)
@@ -367,7 +381,7 @@ if __name__ == '__main__':
                 seq_length = out.size(0)
                 sizes = Variable(input_percentages.mul_(int(seq_length)).int(), requires_grad=False)
 
-                loss = (criterion(out, targets, sizes, target_sizes) * subbatch_frac)
+                loss = (criterion(out, targets, sizes, target_sizes) / inputs.size(0))
                 del out
                 del inputs
                 del target_sizes
@@ -422,7 +436,7 @@ if __name__ == '__main__':
 
         start_iter = 0  # Reset start iteration for next epoch
 
-        wer, cer = evaluate(test_loader, model)
+        wer, cer, loss = evaluate(test_loader, model)
 
         ts.loss_results[epoch] = ts.avg_loss
         ts.wer_results[epoch] = wer
@@ -432,7 +446,7 @@ if __name__ == '__main__':
               'Average CER {cer:.3f}\t'.format(
             epoch + 1, wer=wer, cer=cer))
 
-        viz.log_epoch(epoch, ts.loss_results, ts.wer_results, ts.cer_results)
+        viz.log_epoch(epoch, ts.loss_results, ts.wer_results, ts.cer_results, eval_loss=loss)
 
         if args.checkpoint:
             file_path = '%s/deepspeech_%d.pth.tar' % (save_folder, epoch + 1)
