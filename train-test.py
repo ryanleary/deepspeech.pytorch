@@ -366,8 +366,6 @@ if __name__ == '__main__':
             # measure data loading time
             data_time.update(time.time() - end)
             for inputs, targets, input_percentages, target_sizes in get_subbatches(data, args.batch_size, max_size=2000000):
-                subbatch_frac = inputs.size(0)/args.batch_size
-
                 inputs = Variable(inputs, requires_grad=False)
                 target_sizes = Variable(target_sizes, requires_grad=False)
                 targets = Variable(targets, requires_grad=False)
@@ -381,7 +379,7 @@ if __name__ == '__main__':
                 seq_length = out.size(0)
                 sizes = Variable(input_percentages.mul_(int(seq_length)).int(), requires_grad=False)
 
-                loss = (criterion(out, targets, sizes, target_sizes) / inputs.size(0))
+                loss = (criterion(out, targets, sizes, target_sizes) / args.batch_size)
                 del out
                 del inputs
                 del target_sizes
