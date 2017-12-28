@@ -11,6 +11,7 @@ from warpctc_pytorch import CTCLoss
 from data.data_loader import AudioDataLoader, SpectrogramDataset, BucketingSampler
 from decoder import GreedyDecoder
 from model import DeepSpeech, supported_rnns
+from logger import BaseLogger, TensorboardLogger, VizLogger
 
 parser = argparse.ArgumentParser(description='DeepSpeech training')
 parser.add_argument('--train-manifest', metavar='DIR',
@@ -63,10 +64,6 @@ parser.add_argument('--max-elements', type=int, default=0,
                     help='maximum number of elements in a training input matrix, larger matrices will result in subbatching')
 
 
-def to_np(x):
-    return x.data.cpu().numpy()
-
-
 class AverageMeter(object):
     """Computes and stores the average and current value"""
 
@@ -95,7 +92,10 @@ def get_subbatches(data_tuple, nominal_batch_size, max_size=0):
         if max_batch_size < nominal_batch_size:
             print("  Warn: Batch too large. Splitting into subbatches with maxsize =", max_batch_size)
             for i in range(0, shape[0], max_batch_size):
-                yield (a[i:i+max_batch_size].contiguous(), b[i:i+max_batch_size].contiguous(), c[i:i+max_batch_size].contiguous(), d[i:i+max_batch_size].contiguous())
+                yield (a[i:i+max_batch_size].contiguous(),
+                       b[i:i+max_batch_size].contiguous(),
+                       c[i:i+max_batch_size].contiguous(),
+                       d[i:i+max_batch_size].contiguous())
         else:
             yield data_tuple
 
@@ -107,112 +107,6 @@ def create_dir_safe(path):
             print('Model Save directory already exists.')
         else:
             raise
-
-class BaseLogger(object):
-    def __init__(self):
-        pass
-    def init_epoch(self, loss, wer, cer, eval_loss):
-        pass
-    def log_epoch(self, epoch, loss_results, wer_results, cer_results, eval_loss=None):
-        pass
-    def log_previous_epochs(self, end_epoch, loss_results, wer_results, cer_results):
-        pass
-    def log_step(self, step, loss):
-        pass
-
-class VizLogger(BaseLogger):
-    def __init__(self, _id, epochs):
-        from visdom import Visdom
-        self.viz = Visdom()
-        self.opts = dict(title=_id, ylabel='', xlabel='Epoch', legend=['Loss', 'WER', 'CER'])
-        self.viz_window = None
-        self.epochs = torch.arange(1, epochs+1)
-
-    def log_epoch(self, epoch, loss_results, wer_results, cer_results, eval_loss=None):
-        x_axis = self.epochs[0:epoch + 1]
-        y_axis = torch.stack((loss_results[0:epoch + 1], wer_results[0:epoch + 1], cer_results[0:epoch + 1]), dim=1)
-        if self.viz_window is None:
-            self.viz_window = viz.line(
-                X=x_axis,
-                Y=y_axis,
-                opts=self.opts,
-            )
-        else:
-            viz.line(
-                X=x_axis.unsqueeze(0).expand(y_axis.size(1), x_axis.size(0)).transpose(0, 1),  # Visdom fix
-                Y=y_axis,
-                win=self.viz_window,
-                update='replace',
-            )
-    def log_previous_epochs(self, end_epoch, loss_results, wer_results, cer_results):
-        x_axis = epochs[0:end_epoch]
-        y_axis = torch.stack(
-            (loss_results[0:end_epoch], wer_results[0:end_epoch], cer_results[0:end_epoch]),
-            dim=1)
-        self.viz_window = viz.line(
-            X=x_axis,
-            Y=y_axis,
-            opts=opts,
-        )
-
-class TensorboardLogger(BaseLogger):
-    def __init__(self, _id, log_dir, model=None):
-        from tensorboardX import SummaryWriter
-        import socket
-        from datetime import datetime
-        log_dir = os.path.join(log_dir, datetime.now().strftime('%b%d_%H-%M-%S')+'_'+socket.gethostname()+'_'+_id)
-        try:
-            os.makedirs(log_dir)
-        except OSError as e:
-            if e.errno == errno.EEXIST:
-                print('Tensorboard log directory already exists.')
-                for file in os.listdir(log_dir):
-                    file_path = os.path.join(log_dir, file)
-                    try:
-                        if os.path.isfile(file_path):
-                            os.unlink(file_path)
-                    except Exception:
-                        raise
-            else:
-                raise
-        self._writer = SummaryWriter(log_dir)
-        self._id = _id
-        self._model = model
-
-    def log_step(self, step, loss):
-        self._writer.add_scalar("loss_step/train", loss, step+1)
-
-    def init_epoch(self, loss, wer, cer, eval_loss):
-        self._writer.add_scalar("loss/train", loss, 0)
-        self._writer.add_scalar("loss/val", eval_loss, 0)
-        self._writer.add_scalar("accuracy/wer", wer, 0)
-        self._writer.add_scalar("accuracy/cer", cer, 0)
-
-    def log_epoch(self, epoch, loss_results, wer_results, cer_results, eval_loss=None):
-        # values = {
-        #     'Avg Train Loss': loss_results[epoch],
-        #     'Avg WER': wer_results[epoch],
-        #     'Avg CER': cer_results[epoch]
-        # }
-        # self._writer.add_scalars(self._id, values, epoch + 1)
-        self._writer.add_scalar("loss/train", loss_results[epoch], epoch+1)
-        self._writer.add_scalar("loss/val", eval_loss, epoch+1)
-        self._writer.add_scalar("accuracy/wer", wer_results[epoch], epoch+1)
-        self._writer.add_scalar("accuracy/cer", cer_results[epoch], epoch+1)
-        if self._model:
-            for tag, value in self._model.named_parameters():
-                tag = tag.replace('.', '/')
-                self._writer.add_histogram(tag, to_np(value), epoch + 1)
-                self._writer.add_histogram(tag + '/grad', to_np(value.grad), epoch + 1)
-
-    def log_previous_epochs(self, end_epoch, loss_results, wer_results, cer_results):
-        for i in range(end_epoch):
-            values = {
-                'Avg Train Loss': loss_results[i],
-                'Avg WER': wer_results[i],
-                'Avg CER': cer_results[i]
-            }
-            self._writer.add_scalars(self._id, values, i + 1)
 
 
 def load_model(path, epochs, finetune=False, viz=BaseLogger()):
@@ -327,8 +221,7 @@ if __name__ == '__main__':
     torch.cuda.manual_seed_all(123456)
     args = parser.parse_args()
 
-    save_folder = args.save_folder
-    create_dir_safe(save_folder)
+    create_dir_safe(args.save_folder)
 
     if args.continue_from:  # Starting from previous model
         print("Loading checkpoint model %s" % args.continue_from)
@@ -445,7 +338,7 @@ if __name__ == '__main__':
                     (epoch + 1), (i + 1), len(train_sampler), batch_time=batch_time,
                     data_time=data_time, loss=losses))
             if args.checkpoint_per_batch > 0 and i > 0 and (i + 1) % args.checkpoint_per_batch == 0:
-                file_path = '%s/deepspeech_checkpoint_epoch_%d_iter_%d.pth.tar' % (save_folder, epoch + 1, i + 1)
+                file_path = '%s/deepspeech_checkpoint_epoch_%d_iter_%d.pth.tar' % (args.save_folder, epoch + 1, i + 1)
                 print("Saving checkpoint model to %s" % file_path)
                 torch.save(DeepSpeech.serialize(model, optimizer=optimizer, epoch=epoch, iteration=i,
                                                 loss_results=ts.loss_results,
@@ -471,7 +364,7 @@ if __name__ == '__main__':
         viz.log_epoch(epoch, ts.loss_results, ts.wer_results, ts.cer_results, eval_loss=loss)
 
         if args.checkpoint:
-            file_path = '%s/deepspeech_%d.pth.tar' % (save_folder, epoch + 1)
+            file_path = '%s/deepspeech_%d.pth.tar' % (args.save_folder, epoch + 1)
             torch.save(DeepSpeech.serialize(model, optimizer=optimizer, epoch=epoch, loss_results=ts.loss_results,
                                             wer_results=ts.wer_results, cer_results=ts.cer_results),
                        file_path)
