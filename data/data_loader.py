@@ -15,17 +15,6 @@ windows = {'hamming': scipy.signal.hamming, 'hann': scipy.signal.hann, 'blackman
            'bartlett': scipy.signal.bartlett}
 
 
-def load_audio(path):
-    sound, _ = torchaudio.load(path)
-    sound = sound.numpy()
-    if len(sound.shape) > 1:
-        if sound.shape[1] == 1:
-            sound = sound.squeeze()
-        else:
-            sound = sound.mean(axis=1)  # multiple channels, average
-    return sound
-
-
 class AudioParser(object):
     def parse_transcript(self, transcript_path):
         """
@@ -101,10 +90,12 @@ class SpectrogramParser(AudioParser):
             y = load_randomly_augmented_audio(audio_path, self.sample_rate)
         else:
             y = load_audio(audio_path)
+
         if self.noiseInjector:
             add_noise = np.random.binomial(1, self.noise_prob)
             if add_noise:
                 y = self.noiseInjector.inject_noise(y)
+
         n_fft = int(self.sample_rate * self.window_size)
         win_length = n_fft
         hop_length = int(self.sample_rate * self.window_stride)
@@ -221,6 +212,17 @@ class BucketingSampler(Sampler):
 
     def shuffle(self):
         np.random.shuffle(self.bins)
+
+def load_audio(path):
+    sound, _ = torchaudio.load(path)
+    sound = sound.numpy()
+    if len(sound.shape) > 1:
+        if sound.shape[1] == 1:
+            sound = sound.squeeze()
+        else:
+            sound = sound.mean(axis=1)  # multiple channels, average
+    return sound
+
 
 
 def get_audio_length(path):
