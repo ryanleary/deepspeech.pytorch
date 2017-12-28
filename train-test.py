@@ -59,6 +59,7 @@ parser.add_argument('--no_shuffle', dest='no_shuffle', action='store_true',
                     help='Turn off shuffling and sample from dataset based on sequence length (smallest to largest)')
 parser.add_argument('--no_bidirectional', dest='bidirectional', action='store_false', default=True,
                     help='Turn off bi-directional RNNs, introduces lookahead convolution')
+parser.add_argument('--max_elements', type=int, default=0, help='maximum number of elements in a training input matrix, larger matrices will result in subbatching')
 
 
 def to_np(x):
@@ -89,9 +90,9 @@ def get_subbatches(data_tuple, nominal_batch_size, max_size=0):
     else:
         (a, b, c, d) = data_tuple
         shape = a.size()
-        max_batch_size = min(nominal_batch_size, int(max_size//(shape[1]*shape[2]*shape[3])))
+        max_batch_size = min(nominal_batch_size, int(max_size//(shape[1]*shape[2]*shape[3]))-1)
         if max_batch_size < nominal_batch_size:
-            print("  Warn: Batch too large. Subbatching.")
+            print("  Warn: Batch too large. Splitting into subbatches with maxsize =", max_batch_size)
             for i in range(0, shape[0], max_batch_size):
                 yield (a[i:i+max_batch_size].contiguous(), b[i:i+max_batch_size].contiguous(), c[i:i+max_batch_size].contiguous(), d[i:i+max_batch_size].contiguous())
         else:
@@ -109,9 +110,13 @@ def create_dir_safe(path):
 class BaseLogger(object):
     def __init__(self):
         pass
+    def init_epoch(self, loss, wer, cer, eval_loss):
+        pass
     def log_epoch(self, epoch, loss_results, wer_results, cer_results, eval_loss=None):
         pass
     def log_previous_epochs(self, end_epoch, loss_results, wer_results, cer_results):
+        pass
+    def log_step(self, step, loss):
         pass
 
 class VizLogger(BaseLogger):
@@ -172,6 +177,15 @@ class TensorboardLogger(BaseLogger):
         self._writer = SummaryWriter(log_dir)
         self._id = _id
         self._model = model
+
+    def log_step(self, step, loss):
+        self._writer.add_scalar("loss_step/train", loss, step+1)
+
+    def init_epoch(self, loss, wer, cer, eval_loss):
+        self._writer.add_scalar("loss/train", loss, 0)
+        self._writer.add_scalar("loss/val", eval_loss, 0)
+        self._writer.add_scalar("accuracy/wer", wer, 0)
+        self._writer.add_scalar("accuracy/cer", cer, 0) 
 
     def log_epoch(self, epoch, loss_results, wer_results, cer_results, eval_loss=None):
         # values = {
@@ -287,7 +301,7 @@ def evaluate(test_loader, model):
         seq_length = out.size(0)
         sizes = Variable(input_percentages.mul_(int(seq_length)).int(), requires_grad=False)
 
-        total_loss += (criterion(out, targets, sizes, target_sizes) / inputs.size(0))
+        total_loss += criterion(out, targets, sizes, target_sizes)
 
         decoded_output, _ = decoder.decode(out.data, sizes.data)
         target_strings = decoder.convert_to_strings(split_targets)
@@ -356,7 +370,11 @@ if __name__ == '__main__':
     data_time = AverageMeter()
     losses = AverageMeter()
 
+    wer, cer, loss = evaluate(test_loader, model)
+    viz.init_epoch(loss, wer, cer, loss)
+
     # iterate over dataset an epoch at a time
+    step = 0
     for epoch in range(ts.start_epoch, args.epochs):
         model.train()
         end = time.time()
@@ -365,13 +383,16 @@ if __name__ == '__main__':
                 break
             # measure data loading time
             data_time.update(time.time() - end)
-            for inputs, targets, input_percentages, target_sizes in get_subbatches(data, args.batch_size, max_size=2000000):
+            for inputs, targets, input_percentages, target_sizes in get_subbatches(data, args.batch_size, max_size=args.max_elements):
+                subbatch_size = inputs.size(0)
                 inputs = Variable(inputs, requires_grad=False)
                 target_sizes = Variable(target_sizes, requires_grad=False)
                 targets = Variable(targets, requires_grad=False)
 
                 if args.cuda:
                     inputs = inputs.cuda()
+                if args.cuda and epoch == 0 and i % 2 == 0:
+                    torch.cuda.empty_cache()
 
                 out = model(inputs)
                 out = out.transpose(0, 1)  # TxNxH
@@ -396,7 +417,7 @@ if __name__ == '__main__':
                     loss_value = loss.data[0]
 
                 ts.avg_loss += loss_value
-                losses.update(loss_value, args.batch_size)
+                losses.update(loss_value, subbatch_size)
 
                 # compute gradient
                 optimizer.zero_grad()
@@ -413,6 +434,8 @@ if __name__ == '__main__':
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
+            viz.log_step(step, losses.val)
+            step += 1
             if not args.silent:
                 print('Epoch: [{0}][{1}/{2}]\t'
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
