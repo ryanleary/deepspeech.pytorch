@@ -48,14 +48,7 @@ parser.add_argument('--model-path', default='models/deepspeech_final.pth.tar',
 parser.add_argument('--continue-from', default='', help='Continue from checkpoint model')
 parser.add_argument('--finetune', dest='finetune', action='store_true',
                     help='Finetune the model from checkpoint "continue_from"')
-parser.add_argument('--augment', dest='augment', action='store_true', help='Use random tempo and gain perturbations.')
-parser.add_argument('--noise-dir', default=None,
-                    help='Directory to inject noise into audio. If default, noise Inject not added')
-parser.add_argument('--noise-prob', default=0.4, help='Probability of noise being added per sample')
-parser.add_argument('--noise-min', default=0.0,
-                    help='Minimum noise level to sample from. (1.0 means all noise, not original signal)', type=float)
-parser.add_argument('--noise-max', default=0.5,
-                    help='Maximum noise levels to sample from. Maximum 1.0', type=float)
+parser.add_argument('--augment-config', type=str, default=None, help='Path to data augmentation configuration file')
 parser.add_argument('--no-shuffle', dest='no_shuffle', action='store_true',
                     help='Turn off shuffling and sample from dataset based on sequence length (smallest to largest)')
 parser.add_argument('--no-bidirectional', dest='bidirectional', action='store_false', default=True,
@@ -142,10 +135,7 @@ def init_model(args):
     audio_conf = dict(sample_rate=args.sample_rate,
                       window_size=args.window_size,
                       window_stride=args.window_stride,
-                      window=args.window,
-                      noise_dir=args.noise_dir,
-                      noise_prob=args.noise_prob,
-                      noise_levels=(args.noise_min, args.noise_max))
+                      window=args.window)
 
     rnn_type = args.rnn_type.lower()
     assert rnn_type in supported_rnns, "rnn_type should be either lstm, rnn or gru"
@@ -247,9 +237,9 @@ if __name__ == '__main__':
 
     # set up data loaders
     train_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=args.train_manifest, labels=labels,
-                                       normalize=True, augment=args.augment)
+                                       normalize=True, augment_config=args.augment_config)
     test_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=args.val_manifest, labels=labels,
-                                      normalize=True, augment=False)
+                                      normalize=True, augment_config=None)
     train_sampler = BucketingSampler(train_dataset, batch_size=args.batch_size)
     train_loader = AudioDataLoader(train_dataset,
                                    num_workers=args.num_workers, batch_sampler=train_sampler)

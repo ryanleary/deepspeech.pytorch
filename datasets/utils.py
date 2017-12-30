@@ -5,6 +5,7 @@ import io
 import os
 from tqdm import tqdm
 import subprocess
+import json
 
 
 def create_manifest(data_path, output_path, min_duration=None, max_duration=None):
@@ -12,12 +13,12 @@ def create_manifest(data_path, output_path, min_duration=None, max_duration=None
                   for dirpath, dirnames, files in os.walk(data_path)
                   for f in fnmatch.filter(files, '*.wav')]
     file_paths = order_and_prune_files(file_paths, min_duration, max_duration)
-    with io.FileIO(output_path, "w") as file:
-        for wav_path in tqdm(file_paths, total=len(file_paths)):
+    with io.FileIO(output_path, "w") as fh:
+        for (wav_path, duration) in tqdm(file_paths, total=len(file_paths)):
             transcript_path = wav_path.replace('/wav/', '/txt/').replace('.wav', '.txt')
-            sample = os.path.abspath(wav_path) + ',' + os.path.abspath(transcript_path) + '\n'
-            file.write(sample.encode('utf-8'))
-    print('\n')
+            sample = {"audio_filepath": wav_path, "text_filepath": transcript_path, "duration": duration}
+            json.dump(sample, fh)
+            fh.write("\n")
 
 
 def order_and_prune_files(file_paths, min_duration, max_duration):
@@ -29,8 +30,5 @@ def order_and_prune_files(file_paths, min_duration, max_duration):
         duration_file_paths = [(path, duration) for path, duration in duration_file_paths if
                                min_duration <= duration <= max_duration]
 
-    def func(element):
-        return element[1]
-
-    duration_file_paths.sort(key=func)
-    return [x[0] for x in duration_file_paths]  # Remove durations
+    duration_file_paths.sort(key=lambda t: t[1])
+    return [x for x in duration_file_paths]
