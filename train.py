@@ -15,9 +15,9 @@ from logger import BaseLogger, TensorboardLogger, VizLogger
 
 parser = argparse.ArgumentParser(description='DeepSpeech training')
 parser.add_argument('--train-manifest', metavar='DIR',
-                    help='path to train manifest csv', default='data/train_manifest.csv')
+                    help='path to train manifest', default='data/train_manifest.jl')
 parser.add_argument('--val-manifest', metavar='DIR',
-                    help='path to validation manifest csv', default='data/val_manifest.csv')
+                    help='path to validation manifest', default='data/val_manifest.jl')
 parser.add_argument('--sample-rate', default=16000, type=int, help='Sample rate')
 parser.add_argument('--batch-size', default=20, type=int, help='Batch size for training')
 parser.add_argument('--num-workers', default=4, type=int, help='Number of workers used in data-loading')
@@ -85,10 +85,10 @@ def get_subbatches(data_tuple, nominal_batch_size, max_size=0):
         if max_batch_size < nominal_batch_size:
             print("  Warn: Batch too large. Splitting into subbatches with maxsize =", max_batch_size)
             for i in range(0, shape[0], max_batch_size):
-                yield (a[i:i+max_batch_size].contiguous(),
-                       b[i:i+max_batch_size].contiguous(),
-                       c[i:i+max_batch_size].contiguous(),
-                       d[i:i+max_batch_size].contiguous())
+                yield (a[i:i+max_batch_size],
+                       b[i:i+max_batch_size],
+                       c[i:i+max_batch_size],
+                       d[i:i+max_batch_size])
         else:
             yield data_tuple
 

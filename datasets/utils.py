@@ -1,7 +1,6 @@
 from __future__ import print_function
 
 import fnmatch
-import io
 import os
 from tqdm import tqdm
 import subprocess
@@ -13,7 +12,7 @@ def create_manifest(data_path, output_path, min_duration=None, max_duration=None
                   for dirpath, dirnames, files in os.walk(data_path)
                   for f in fnmatch.filter(files, '*.wav')]
     file_paths = order_and_prune_files(file_paths, min_duration, max_duration)
-    with io.FileIO(output_path, "w") as fh:
+    with open(output_path, "w", encoding="utf8") as fh:
         for (wav_path, duration) in tqdm(file_paths, total=len(file_paths)):
             transcript_path = wav_path.replace('/wav/', '/txt/').replace('.wav', '.txt')
             sample = {"audio_filepath": wav_path, "text_filepath": transcript_path, "duration": duration}

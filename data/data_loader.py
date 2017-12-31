@@ -30,7 +30,6 @@ class AudioParser(object):
         """
         raise NotImplementedError
 
-class AudioAugmentor(object):
 
 
 
@@ -51,21 +50,14 @@ class SpectrogramParser(AudioParser):
         self.augmentor = AudioAugmentor.from_config(augment_conf) if augment_conf else None
 
     def parse_audio(self, audio_path):
-        if self.augment:
-            y = load_randomly_augmented_audio(audio_path, self.sample_rate)
-        else:
-            y = load_audio(audio_path)
-
-        if self.noiseInjector:
-            add_noise = np.random.binomial(1, self.noise_prob)
-            if add_noise:
-                y = self.noiseInjector.inject_noise(y)
+        y = AudioSegment.from_file(audio_path)
+        self.augmentor.perturb(y)
 
         n_fft = int(self.sample_rate * self.window_size)
         win_length = n_fft
         hop_length = int(self.sample_rate * self.window_stride)
         # STFT
-        D = librosa.stft(y, n_fft=n_fft, hop_length=hop_length,
+        D = librosa.stft(y.samples, n_fft=n_fft, hop_length=hop_length,
                          win_length=win_length, window=self.window)
         spect, phase = librosa.magphase(D)
         # S = log(S+1)
@@ -177,13 +169,3 @@ class BucketingSampler(Sampler):
 
     def shuffle(self):
         np.random.shuffle(self.bins)
-
-def load_audio(path):
-    sound, _ = torchaudio.load(path)
-    sound = sound.numpy()
-    if len(sound.shape) > 1:
-        if sound.shape[1] == 1:
-            sound = sound.squeeze()
-        else:
-            sound = sound.mean(axis=1)  # multiple channels, average
-    return sound
