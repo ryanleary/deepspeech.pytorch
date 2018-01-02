@@ -1,0 +1,18 @@
+[
+  {
+    "type": "gain",
+    "prob": 0.8,
+    "params": {
+      "min_gain_dbfs": -10,
+      "max_gain_dbfs": 10
+     }
+  },
+  {
+    "type": "speed",
+    "prob": 0.8,
+    "params": {
+      "min_rate": 0.85,
+      "max_rate": 1.15
+    }
+  }
+]
