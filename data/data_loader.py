@@ -1,4 +1,5 @@
 import os
+import json
 import subprocess
 from tempfile import NamedTemporaryFile
 from torch.utils.data.sampler import Sampler
@@ -8,6 +9,7 @@ import numpy as np
 import scipy.signal
 import torch
 import torchaudio
+from .augment import AudioAugmentor, AudioSegment
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 
@@ -47,7 +49,7 @@ class SpectrogramParser(AudioParser):
         self.sample_rate = audio_conf['sample_rate']
         self.window = windows.get(audio_conf['window'], windows['hamming'])
         self.normalize = normalize
-        self.augmentor = AudioAugmentor.from_config(augment_conf) if augment_conf else None
+        self.augmentor = AudioAugmentor.from_config(augment_conf) if augment_conf else AudioAugmentor()
 
     def parse_audio(self, audio_path):
         y = AudioSegment.from_file(audio_path)
@@ -76,7 +78,7 @@ class SpectrogramParser(AudioParser):
 
 
 class SpectrogramDataset(Dataset, SpectrogramParser):
-    def __init__(self, audio_conf, manifest_filepath, labels, normalize=False, augment=False):
+    def __init__(self, audio_conf, manifest_filepath, labels, normalize=False, augment_config=None, max_duration=None, min_duration=None):
         """
         Dataset that loads tensors via a csv containing file paths to audio files and transcripts separated by
         a comma. Each new line is a different sample. Example below:
@@ -90,17 +92,30 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         :param normalize: Apply standard mean and deviation normalization to audio tensor
         :param augment(default False):  Apply random tempo and gain perturbations
         """
-        with open(manifest_filepath) as f:
-            ids = f.readlines()
-        ids = [x.strip().split(',') for x in ids]
+        ids = []
+        duration = 0.0
+        filtered_duration = 0.0
+        with open(manifest_filepath) as fh:
+            for line in fh:
+                data = json.loads(line)
+                if min_duration is not None and data['duration'] < min_duration:
+                    filtered_duration += data['duration']
+                    continue
+                if max_duration is not None and data['duration'] > max_duration:
+                    filtered_duration += data['duration']
+                    continue
+                ids.append(data)
+                duration += data['duration']
+        print("Dataset loaded with", duration/3600, "hours. Filtered", filtered_duration/3600, "hours.")
         self.ids = ids
         self.size = len(ids)
+        self.duration = duration
         self.labels_map = dict([(labels[i], i) for i in range(len(labels))])
-        super(SpectrogramDataset, self).__init__(audio_conf, normalize, augment)
+        super(SpectrogramDataset, self).__init__(audio_conf, normalize, augment_config)
 
     def __getitem__(self, index):
         sample = self.ids[index]
-        audio_path, transcript_path = sample[0], sample[1]
+        audio_path, transcript_path = sample['audio_filepath'], sample['text_filepath']
         spect = self.parse_audio(audio_path)
         transcript = self.parse_transcript(transcript_path)
         return spect, transcript

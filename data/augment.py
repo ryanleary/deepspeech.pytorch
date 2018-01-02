@@ -1,10 +1,12 @@
 import numpy as np
+import json
 import soundfile
 import random
 
 class Perturbation(object):
     def perturb(self, data):
         raise NotImplementedError
+
 
 class SpeedPerturbation(Perturbation):
     def __init__(self, min_rate=0.85, max_rate=1.15, rng=None):
@@ -42,6 +44,21 @@ class AudioAugmentor(object):
             if self._rng.random() < prob:
                 p.perturb(segment)
         return
+
+    @classmethod
+    def from_config(cls, config_file):
+        config = []
+        with open(config_file, "r") as fh:
+            raw_config = json.load(fh)
+        for p in raw_config:
+            if p['type'] not in perturbations:
+                print(p['type'], "perturbation not known. Skipping.")
+                continue
+            perturbation = perturbations[p['type']]
+            config.append((p['prob'], perturbation(**p['params'])))
+        return cls(perturbations=config)
+
+perturbations = {"speed": SpeedPerturbation, "gain": GainPerturbation}
 
 
 class AudioSegment(object):

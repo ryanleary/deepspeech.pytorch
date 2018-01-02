@@ -201,6 +201,11 @@ def evaluate(test_loader, model):
         if args.cuda:
             torch.cuda.synchronize()
         del out
+        del inputs
+        del targets
+        del input_percentages
+        del target_sizes
+        del split_targets
     wer = (total_wer / len(test_loader.dataset)) * 100
     cer = (total_cer / len(test_loader.dataset)) * 100
     loss = (total_loss / len(test_loader.dataset))
@@ -237,7 +242,7 @@ if __name__ == '__main__':
 
     # set up data loaders
     train_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=args.train_manifest, labels=labels,
-                                       normalize=True, augment_config=args.augment_config)
+                                       normalize=True, augment_config=args.augment_config, min_duration=1.0, max_duration=18.0)
     test_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=args.val_manifest, labels=labels,
                                       normalize=True, augment_config=None)
     train_sampler = BucketingSampler(train_dataset, batch_size=args.batch_size)
