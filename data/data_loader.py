@@ -8,6 +8,7 @@ import numpy as np
 import scipy.signal
 import torch
 import torchaudio
+import json
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 
@@ -142,17 +143,17 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         :param normalize: Apply standard mean and deviation normalization to audio tensor
         :param augment(default False):  Apply random tempo and gain perturbations
         """
+        self.ids = []
         with open(manifest_filepath) as f:
-            ids = f.readlines()
-        ids = [x.strip().split(',') for x in ids]
-        self.ids = ids
-        self.size = len(ids)
+            for line in f:
+                self.ids.append(json.loads(line))
+        self.size = len(self.ids)
         self.labels_map = dict([(labels[i], i) for i in range(len(labels))])
         super(SpectrogramDataset, self).__init__(audio_conf, normalize, augment)
 
     def __getitem__(self, index):
         sample = self.ids[index]
-        audio_path, transcript_path = sample[0], sample[1]
+        audio_path, transcript_path = sample['audio_filepath'], sample['text_filepath']
         spect = self.parse_audio(audio_path)
         transcript = self.parse_transcript(transcript_path)
         return spect, transcript
@@ -165,6 +166,12 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
 
     def __len__(self):
         return self.size
+
+    def get_largest_minibatch(self, minibatch_size):
+        longest_sample = self[-1][0] + 20 # +20 gives some wiggle room
+        freq_size = longest_sample.size(0)
+        max_seqlength = longest_sample.size(1)
+        return torch.zeros(minibatch_size, 1, freq_size, max_seqlength)
 
 
 def _collate_fn(batch):

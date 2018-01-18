@@ -8,7 +8,7 @@ import torch
 from tqdm import tqdm
 from torch.autograd import Variable
 from warpctc_pytorch import CTCLoss
-from data.data_loader import AudioDataLoader, SpectrogramDataset, BucketingSampler
+from data.data_loader import AudioDataLoader, SpectrogramDataset, BucketingSampler, _collate_fn
 from decoder import GreedyDecoder
 from model import DeepSpeech, supported_rnns
 
@@ -213,7 +213,7 @@ if __name__ == '__main__':
                                       normalize=True, augment=False)
     train_sampler = BucketingSampler(train_dataset, batch_size=args.batch_size)
     train_loader = AudioDataLoader(train_dataset,
-                                   num_workers=args.num_workers, batch_sampler=train_sampler)
+                                   num_workers=args.num_workers, batch_sampler=train_sampler)#, pin_memory=True)
     test_loader = AudioDataLoader(test_dataset, batch_size=args.batch_size,
                                   num_workers=args.num_workers)
 
@@ -231,6 +231,24 @@ if __name__ == '__main__':
     data_time = AverageMeter()
     losses = AverageMeter()
 
+    # warm up with the largest sized minibatch
+    print("Starting warmup")
+    warmup = Variable(train_dataset.get_largest_minibatch(args.batch_size), requires_grad=False)
+    if args.cuda:
+        warmup = warmup.cuda()
+    print("Run forward pass")
+    out = model(warmup).transpose(0, 1)
+    targets = Variable(torch.IntTensor(args.batch_size * 10), requires_grad=False)
+    sizes = Variable(torch.IntTensor(args.batch_size), requires_grad=False)
+    print("Calculate CTC loss")
+    print(out.size(), targets.size(), sizes.size())
+    #criterion(out, targets, sizes.add(warmup.size(0)), sizes.add(10))
+    del out
+    del warmup
+    del targets
+    del sizes
+
+    # start real training loop
     for epoch in range(start_epoch, args.epochs):
         model.train()
         end = time.time()
@@ -252,7 +270,7 @@ if __name__ == '__main__':
 
             seq_length = out.size(0)
             sizes = Variable(input_percentages.mul_(int(seq_length)).int(), requires_grad=False)
-
+            
             loss = criterion(out, targets, sizes, target_sizes)
             loss = loss / inputs.size(0)  # average the loss by minibatch
 
@@ -297,6 +315,7 @@ if __name__ == '__main__':
                            file_path)
             del loss
             del out
+            del inputs
         avg_loss /= len(train_sampler)
 
         print('Training Summary Epoch: [{0}]\t'
