@@ -7,7 +7,7 @@ from tqdm import tqdm
 from decoder import GreedyDecoder
 
 from data.data_loader import SpectrogramDataset, AudioDataLoader
-from model import DeepSpeech
+from model import DeepSpeechOptim, DeepSpeech
 
 parser = argparse.ArgumentParser(description='DeepSpeech transcription')
 parser.add_argument('--model-path', default='models/deepspeech_final.pth',
@@ -38,7 +38,7 @@ beam_args.add_argument('--lm-workers', default=1, type=int, help='Number of LM p
 args = parser.parse_args()
 
 if __name__ == '__main__':
-    model = DeepSpeech.load_model(args.model_path, cuda=args.cuda)
+    model = DeepSpeechOptim.load_model(args.model_path, cuda=args.cuda)
     model.eval()
 
     labels = DeepSpeech.get_labels(model)

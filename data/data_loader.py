@@ -168,28 +168,24 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
 
 
 def _collate_fn(batch):
-    def func(p):
-        return p[0].size(1)
-
-    longest_sample = max(batch, key=func)[0]
-    freq_size = longest_sample.size(0)
+    # sort batch by descending sequence length (for packed sequences later)
+    batch.sort(key=lambda x: -x[0].size(1))
     minibatch_size = len(batch)
-    max_seqlength = longest_sample.size(1)
-    inputs = torch.zeros(minibatch_size, 1, freq_size, max_seqlength)
-    input_percentages = torch.FloatTensor(minibatch_size)
+    
+    # init tensors we need to return
+    inputs = torch.zeros(minibatch_size, 1, batch[0][0].size(0), batch[0][0].size(1))
+    input_lengths = torch.IntTensor(minibatch_size)
     target_sizes = torch.IntTensor(minibatch_size)
     targets = []
-    for x in range(minibatch_size):
-        sample = batch[x]
-        tensor = sample[0]
-        target = sample[1]
-        seq_length = tensor.size(1)
-        inputs[x][0].narrow(1, 0, seq_length).copy_(tensor)
-        input_percentages[x] = seq_length / float(max_seqlength)
-        target_sizes[x] = len(target)
-        targets.extend(target)
+    
+    # iterate over minibatch to fill in tensors appropriately
+    for i, sample in enumerate(batch):
+        input_lengths[i] = sample[0].size(1)
+        inputs[i][0].narrow(1, 0, sample[0].size(1)).copy_(sample[0])
+        target_sizes[i] = len(sample[1])
+        targets.extend(sample[1])
     targets = torch.IntTensor(targets)
-    return inputs, targets, input_percentages, target_sizes
+    return inputs, targets, input_lengths, target_sizes
 
 
 class AudioDataLoader(DataLoader):

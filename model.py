@@ -70,13 +70,13 @@ class BatchRNN(nn.Module):
         return x
 
 
-class Lookahead(nn.Module):
+class LookaheadConvolution(nn.Module):
     # Wang et al 2016 - Lookahead Convolution Layer for Unidirectional Recurrent Neural Networks
     # input shape - sequence, batch, feature - TxNxH
     # output shape - same as input
     def __init__(self, n_features, context):
         # should we handle batch_first=True?
-        super(Lookahead, self).__init__()
+        super(LookaheadConvolution, self).__init__()
         self.n_features = n_features
         self.weight = Parameter(torch.Tensor(n_features, context + 1))
         assert context > 0
@@ -108,6 +108,234 @@ class Lookahead(nn.Module):
         return self.__class__.__name__ + '(' \
                + 'n_features=' + str(self.n_features) \
                + ', context=' + str(self.context) + ')'
+
+
+class NoiseRNN(nn.Module):
+    def __init__(self, input_size, hidden_size, rnn_type=nn.LSTM, bidirectional=False, num_layers=1, weight_noise=None):
+        super(NoiseRNN, self).__init__()
+        self._input_size = input_size
+        self._hidden_size = hidden_size
+        self._bidirectional = bidirectional
+        self._num_directions = 2 if bidirectional else 1
+        self._weight_noise = weight_noise
+        self.module = rnn_type(input_size=input_size, hidden_size=hidden_size,
+                               bidirectional=bidirectional, bias=True, num_layers=num_layers)
+
+        scratch_tensors = set([])
+        for p, x in self.module.named_parameters():
+            if not p.startswith("bias") and self.get_noise_buffer_name(x) not in scratch_tensors:
+                self.register_buffer(self.get_noise_buffer_name(x), torch.zeros(x.shape).type_as(x.data))
+
+    def flatten_parameters(self):
+        self.module.flatten_parameters()
+
+    def forward(self, x):
+        if self.training and self._weight_noise is not None:
+            for pn, pv in self.module.named_parameters():
+                if not pn.startswith("bias"):
+                    pv.data.add_(self.get_noise_buffer(pv).normal_(mean=0.0, std=0.001))
+        x, h = self.module(x)
+        return x, h
+    
+    def get_noise_buffer_name(self, tensor):
+        shape = tensor.shape
+        out = str(shape[0])
+        for x in range(1, len(shape)):
+            out += "x" + str(shape[x])
+        return "rnd_" + out
+    
+    def get_noise_buffer(self, tensor):
+        name = self.get_noise_buffer_name(tensor)
+        return getattr(self, name)
+
+
+class DeepSpeechOptim(nn.Module):
+    def __init__(self, rnn_type=nn.LSTM, labels="abc", rnn_hidden_size=768, nb_layers=5, audio_conf=None,
+                 bidirectional=True, context=20, padding=None):
+        super(DeepSpeechOptim, self).__init__()
+
+        # model metadata needed for serialization/deserialization
+        if audio_conf is None:
+            audio_conf = {}
+        self._version = '0.1.0'
+        self._hidden_size = rnn_hidden_size
+        self._hidden_layers = nb_layers
+        self._rnn_type = rnn_type
+        self._audio_conf = audio_conf or {}
+        self._labels = labels
+        self._bidirectional = bidirectional
+
+        sample_rate = self._audio_conf.get("sample_rate", 16000)
+        window_size = self._audio_conf.get("window_size", 0.02)
+
+        self._activation = nn.Hardtanh(0, 20)
+
+        self.conv = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=(41, 11), stride=(2, 2), padding=(0, 10)),
+            nn.BatchNorm2d(32),
+            self._activation,
+            nn.Conv2d(32, 32, kernel_size=(21, 11), stride=(2, 1), ),
+            nn.BatchNorm2d(32),
+            self._activation
+        )
+
+        self.rnns = NoiseRNN(input_size=self.get_rnn_input_size(sample_rate, window_size), hidden_size=rnn_hidden_size,
+                             bidirectional=bidirectional, num_layers=nb_layers, rnn_type=rnn_type)
+
+        if bidirectional:
+            self.lookahead = None
+        else:
+            self.lookahead = nn.Sequential(LookaheadConvolution(rnn_hidden_size, context=context), self._activation)
+
+        self.fc = nn.Linear(rnn_hidden_size, len(self._labels))
+        self.inference_softmax = InferenceBatchSoftmax()
+
+    def get_seq_lens(self, input_length):
+        seq_len = input_length
+        for mod in self.conv:
+            if type(mod) == nn.modules.conv.Conv2d:
+                seq_len = ((seq_len + 2 * mod.padding[1] - mod.dilation[1] * (mod.kernel_size[1] - 1) - 1) / mod.stride[1] + 1)
+                    
+        return seq_len.int()
+
+    def get_rnn_input_size(self, sample_rate, window_size):
+        size = int(math.floor((sample_rate * window_size) / 2) + 1)
+        channels = 0
+        for mod in self.conv:
+            if type(mod) == nn.modules.conv.Conv2d:
+                size = math.floor(
+                    (size + 2 * mod.padding[0] - mod.dilation[0] * (mod.kernel_size[0] - 1) - 1) / mod.stride[0] + 1)
+                channels = mod.out_channels
+        return size * channels
+
+    def forward(self, x, lengths=None):
+        print(x.shape)
+        x = self.conv(x)
+
+        # collapse cnn channels into a feature vector per timestep
+        sizes = x.size()
+        x = x.view(sizes[0], sizes[1] * sizes[2], sizes[3])  # Collapse feature dimension
+        x = x.transpose(1, 2).transpose(0, 1).contiguous()  # TxNxH
+
+        # convert padded matrix to packedsequence, run rnn, and convert back
+        output_lengths = self.get_seq_lens(lengths).data.tolist()
+        x = nn.utils.rnn.pack_padded_sequence(x, output_lengths)
+        x, _ = self.rnns(x)
+        x, _ = nn.utils.rnn.pad_packed_sequence(x)
+
+        # collapse fwd/bwd output if bidirectional rnn, otherwise do lookahead convolution
+        if self._bidirectional:
+            # (TxNxH*2) -> (TxNxH) by sum
+            x = x.view(x.size(0), x.size(1), 2, -1).sum(2).view(x.size(0), x.size(1), -1)
+        else:
+            # do a lookahead convolution
+            x = self.lookahead(x)
+
+        # fully connected layer to output classes
+        x = self.fc(x)
+        x = x.transpose(0, 1)
+
+        # if training, return only logits (ctc loss calculates softmax), otherwise do softmax
+        x = self.inference_softmax(x)
+        print(x.shape)
+        return x, output_lengths
+
+    @classmethod
+    def load_model(cls, path, cuda=False, pad_input=True):
+        package = torch.load(path, map_location=lambda storage, loc: storage)
+        model = cls(rnn_hidden_size=package['hidden_size'], nb_layers=package['hidden_layers'],
+                    labels=package['labels'], audio_conf=package['audio_conf'],
+                    rnn_type=supported_rnns[package['rnn_type']], bidirectional=package.get('bidirectional', True),
+                    padding=pad_input)
+        # the blacklist parameters are params that were previous erroneously saved by the model
+        # care should be taken in future versions that if batch_norm on the first rnn is required
+        # that it be named something else
+        blacklist = ['rnns.0.batch_norm.module.weight', 'rnns.0.batch_norm.module.bias',
+                     'rnns.0.batch_norm.module.running_mean', 'rnns.0.batch_norm.module.running_var']
+        for x in blacklist:
+            if x in package['state_dict']:
+                del package['state_dict'][x]
+        model.load_state_dict(package['state_dict'])
+        #for x in model.rnns:
+        model.rnns.flatten_parameters()
+        if cuda:
+            model = torch.nn.DataParallel(model).cuda()
+        return model
+
+    @classmethod
+    def load_model_package(cls, package, cuda=False):
+        model = cls(rnn_hidden_size=package['hidden_size'], nb_layers=package['hidden_layers'],
+                    labels=package['labels'], audio_conf=package['audio_conf'],
+                    rnn_type=supported_rnns[package['rnn_type']], bidirectional=package.get('bidirectional', True))
+        model.load_state_dict(package['state_dict'])
+        if cuda:
+            model = torch.nn.DataParallel(model).cuda()
+        return model
+
+    @staticmethod
+    def serialize(model, optimizer=None, epoch=None, iteration=None, loss_results=None,
+                  cer_results=None, wer_results=None, avg_loss=None, meta=None):
+        model_is_cuda = next(model.parameters()).is_cuda
+        model = model.module if model_is_cuda else model
+        package = {
+            'version': model._version,
+            'hidden_size': model._hidden_size,
+            'hidden_layers': model._hidden_layers,
+            'rnn_type': supported_rnns_inv.get(model._rnn_type, model._rnn_type.__name__.lower()),
+            'audio_conf': model._audio_conf,
+            'labels': model._labels,
+            'state_dict': model.state_dict(),
+            'bidirectional': model._bidirectional
+        }
+        if optimizer is not None:
+            package['optim_dict'] = optimizer.state_dict()
+        if avg_loss is not None:
+            package['avg_loss'] = avg_loss
+        if epoch is not None:
+            package['epoch'] = epoch + 1  # increment for readability
+        if iteration is not None:
+            package['iteration'] = iteration
+        if loss_results is not None:
+            package['loss_results'] = loss_results
+            package['cer_results'] = cer_results
+            package['wer_results'] = wer_results
+        if meta is not None:
+            package['meta'] = meta
+        return package
+
+    @staticmethod
+    def get_labels(model):
+        model_is_cuda = next(model.parameters()).is_cuda
+        return model.module._labels if model_is_cuda else model._labels
+
+    @staticmethod
+    def get_param_size(model):
+        params = 0
+        for p in model.parameters():
+            tmp = 1
+            for x in p.size():
+                tmp *= x
+            params += tmp
+        return params
+
+    @staticmethod
+    def get_audio_conf(model):
+        model_is_cuda = next(model.parameters()).is_cuda
+        return model.module._audio_conf if model_is_cuda else model._audio_conf
+
+    @staticmethod
+    def get_meta(model):
+        model_is_cuda = next(model.parameters()).is_cuda
+        m = model.module if model_is_cuda else model
+        meta = {
+            "version": m._version,
+            "hidden_size": m._hidden_size,
+            "hidden_layers": m._hidden_layers,
+            "rnn_type": supported_rnns_inv[m._rnn_type]
+        }
+        return meta
+
+
 
 
 class DeepSpeech(nn.Module):
@@ -155,7 +383,7 @@ class DeepSpeech(nn.Module):
         self.rnns = nn.Sequential(OrderedDict(rnns))
         self.lookahead = nn.Sequential(
             # consider adding batch norm?
-            Lookahead(rnn_hidden_size, context=context),
+            LookaheadConvolution(rnn_hidden_size, context=context),
             nn.Hardtanh(0, 20, inplace=True)
         ) if not bidirectional else None
 
@@ -201,8 +429,8 @@ class DeepSpeech(nn.Module):
             if x in package['state_dict']:
                 del package['state_dict'][x]
         model.load_state_dict(package['state_dict'])
-        for x in model.rnns:
-            x.flatten_parameters()
+        #for x in model.rnns:
+        model.rnns.flatten_parameters()
         if cuda:
             model = torch.nn.DataParallel(model).cuda()
         return model
@@ -290,7 +518,7 @@ if __name__ == '__main__':
                         help='Path to model file created by training')
     args = parser.parse_args()
     package = torch.load(args.model_path, map_location=lambda storage, loc: storage)
-    model = DeepSpeech.load_model(args.model_path)
+    model = DeepSpeechOptim.load_model(args.model_path)
 
     print("Model name:         ", os.path.basename(args.model_path))
     print("DeepSpeech version: ", model._version)
@@ -322,3 +550,8 @@ if __name__ == '__main__':
         print("Additional Metadata")
         for k, v in model._meta:
             print("  ", k, ": ", v)
+
+
+    print("")
+    print("Number of Parameters: ", DeepSpeech.get_param_size(model)) 
+    print(model)

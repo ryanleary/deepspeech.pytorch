@@ -10,7 +10,7 @@ from torch.autograd import Variable
 from warpctc_pytorch import CTCLoss
 from data.data_loader import AudioDataLoader, SpectrogramDataset, BucketingSampler
 from decoder import GreedyDecoder
-from model import DeepSpeech, supported_rnns
+from model import DeepSpeech, supported_rnns, DeepSpeechOptim
 
 parser = argparse.ArgumentParser(description='DeepSpeech training')
 parser.add_argument('--train-manifest', metavar='DIR',
@@ -196,7 +196,7 @@ if __name__ == '__main__':
 
         rnn_type = args.rnn_type.lower()
         assert rnn_type in supported_rnns, "rnn_type should be either lstm, rnn or gru"
-        model = DeepSpeech(rnn_hidden_size=args.hidden_size,
+        model = DeepSpeechOptim(rnn_hidden_size=args.hidden_size,
                            nb_layers=args.hidden_layers,
                            labels=labels,
                            rnn_type=supported_rnns[rnn_type],
@@ -237,23 +237,18 @@ if __name__ == '__main__':
         for i, (data) in enumerate(train_loader, start=start_iter):
             if i == len(train_sampler):
                 break
-            inputs, targets, input_percentages, target_sizes = data
+            inputs, targets, input_sizes, target_sizes = data
             # measure data loading time
             data_time.update(time.time() - end)
             inputs = Variable(inputs, requires_grad=False)
+            input_sizes = Variable(input_sizes, requires_grad=False)
             target_sizes = Variable(target_sizes, requires_grad=False)
             targets = Variable(targets, requires_grad=False)
 
-            if args.cuda:
-                inputs = inputs.cuda()
-
-            out = model(inputs)
+            out, out_lengths = model(inputs, input_sizes)
             out = out.transpose(0, 1)  # TxNxH
 
-            seq_length = out.size(0)
-            sizes = Variable(input_percentages.mul_(int(seq_length)).int(), requires_grad=False)
-
-            loss = criterion(out, targets, sizes, target_sizes)
+            loss = criterion(out, targets, Variable(torch.IntTensor(out_lengths), requires_grad=False), target_sizes)
             loss = loss / inputs.size(0)  # average the loss by minibatch
 
             loss_sum = loss.data.sum()
@@ -307,8 +302,8 @@ if __name__ == '__main__':
         total_cer, total_wer = 0, 0
         model.eval()
         for i, (data) in tqdm(enumerate(test_loader), total=len(test_loader)):
-            inputs, targets, input_percentages, target_sizes = data
-
+            inputs, targets, input_sizes, target_sizes = data
+            input_sizes = Variable(input_sizes, volatile=True)
             inputs = Variable(inputs, volatile=True)
 
             # unflatten targets
@@ -321,11 +316,9 @@ if __name__ == '__main__':
             if args.cuda:
                 inputs = inputs.cuda()
 
-            out = model(inputs)  # NxTxH
-            seq_length = out.size(1)
-            sizes = input_percentages.mul_(int(seq_length)).int()
+            out, out_sizes = model(inputs, input_sizes)
 
-            decoded_output, _ = decoder.decode(out.data, sizes)
+            decoded_output, _ = decoder.decode(out.data, out_sizes)
             target_strings = decoder.convert_to_strings(split_targets)
             wer, cer = 0, 0
             for x in range(len(target_strings)):
